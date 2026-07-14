@@ -203,15 +203,26 @@ vi .env   # 至少填写 FEISHU_WEBHOOK_URL
 
 ### 5. 首次回填
 
+ETF 线：
+
 ```bash
 cd /opt/Matrix
 ./scripts/run_matrix.sh --backfill
 ```
 
-`run_matrix.sh` 会自动优先使用 `.venv/bin/python`，其次 `uv run`，最后系统 `python3`，
-并通过 `flock` 防止定时任务并发重入。
+股票线（约 5500 只全 A 股，首次回填耗时较长）：
+
+```bash
+cd /opt/Matrix
+./scripts/run_stock.sh --backfill
+```
+
+`run_matrix.sh` / `run_stock.sh` 会自动优先使用 `.venv/bin/python`，其次 `uv run`，最后
+系统 `python3`，并各自通过独立 `flock` 锁文件防止定时任务并发重入（两条线互不阻塞）。
 
 ### 6. 配置 systemd 定时任务
+
+ETF 线：
 
 ```bash
 sudo cp /opt/Matrix/deploy/systemd/matrix-etf.service /etc/systemd/system/
@@ -220,21 +231,33 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now matrix-etf.timer
 ```
 
+股票线（可选，与 ETF 线独立启停）：
+
+```bash
+sudo cp /opt/Matrix/deploy/systemd/matrix-stock.service /etc/systemd/system/
+sudo cp /opt/Matrix/deploy/systemd/matrix-stock.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now matrix-stock.timer
+```
+
 查看状态与日志：
 
 ```bash
-systemctl list-timers matrix-etf.timer
-systemctl status matrix-etf.service
+systemctl list-timers 'matrix-*.timer'
+systemctl status matrix-etf.service matrix-stock.service
 journalctl -u matrix-etf.service -n 100 --no-pager
+journalctl -u matrix-stock.service -n 100 --no-pager
 ```
 
-定时任务默认在**周一至周五 19:15**（收盘后）运行，`Persistent=true` 会在错过时补跑。
-如需调整时间，编辑 `matrix-etf.timer` 的 `OnCalendar` 后 `systemctl daemon-reload`。
+ETF 线默认在**周一至周五 19:15**、股票线在 **19:40**（收盘后，错开以分散数据源压力）运行，
+`Persistent=true` 会在错过时补跑。如需调整时间，编辑对应 `.timer` 的 `OnCalendar` 后
+`systemctl daemon-reload`。
 
 ### 7. 手动触发一次
 
 ```bash
-sudo systemctl start matrix-etf.service
+sudo systemctl start matrix-etf.service     # ETF 线
+sudo systemctl start matrix-stock.service   # 股票线
 ```
 
 ## 目录结构
@@ -254,8 +277,10 @@ Matrix/
 │   │   ├── etf/                # ETF 策略（按产品种类划分）+ 四梯队报告
 │   │   └── stock/              # 股票策略（按产品种类划分）
 │   └── notify/feishu.py        # 飞书推送（ETF / 股票通用）
-├── deploy/systemd/             # systemd service + timer
-├── scripts/run_matrix.sh       # 运行脚本（flock 防并发）
+├── deploy/systemd/             # systemd service + timer（ETF 线 + 股票线）
+├── scripts/
+│   ├── run_matrix.sh           # ETF 线运行脚本（flock 防并发）
+│   └── run_stock.sh            # 股票线运行脚本（独立锁，flock 防并发）
 ├── docs/                       # 架构 / 数据源 / 策略文档
 └── tests/                      # pytest + hypothesis
 ```

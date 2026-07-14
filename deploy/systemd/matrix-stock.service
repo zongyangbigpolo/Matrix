@@ -1,0 +1,12 @@
+[Unit]
+Description=Matrix daily A-share stock recommendation
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/Matrix
+EnvironmentFile=-/opt/Matrix/.env
+ExecStart=/opt/Matrix/scripts/run_stock.sh
+TimeoutStartSec=4h
+Nice=10

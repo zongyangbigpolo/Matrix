@@ -179,13 +179,24 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    Timer["systemd timer<br/>matrix-etf.timer<br/>周一~周五 19:15"] --> Svc["systemd service<br/>matrix-etf.service"]
-    Svc --> Sh["scripts/run_matrix.sh<br/>flock 防并发"]
-    Sh --> Py[".venv/bin/python main.py"]
-    Py --> TF["tickflow API (出站 HTTPS)"]
-    Py --> DB[("data/matrix_etf.db")]
-    Py --> Fs["飞书 Webhook (出站 HTTPS)"]
+    Timer1["systemd timer<br/>matrix-etf.timer<br/>周一~周五 19:15"] --> Svc1["systemd service<br/>matrix-etf.service"]
+    Svc1 --> Sh1["scripts/run_matrix.sh<br/>flock 防并发"]
+    Sh1 --> Py1[".venv/bin/python main.py"]
+    Py1 --> DB1[("data/matrix_etf.db")]
+
+    Timer2["systemd timer<br/>matrix-stock.timer<br/>周一~周五 19:40"] --> Svc2["systemd service<br/>matrix-stock.service"]
+    Svc2 --> Sh2["scripts/run_stock.sh<br/>独立 flock 锁"]
+    Sh2 --> Py2[".venv/bin/python stock_main.py"]
+    Py2 --> DB2[("data/matrix_stock.db")]
+
+    Py1 --> TF["tickflow API (出站 HTTPS)"]
+    Py2 --> TF
+    Py1 --> Fs["飞书 Webhook (出站 HTTPS)"]
+    Py2 --> Fs
 ```
+
+两条线各自独立的 timer / service / 运行脚本 / 锁文件 / 数据库，可单独启停、互不阻塞；
+时间错开（ETF 19:15、股票 19:40）以分散对 tickflow 数据源的压力。
 
 部署步骤见 [../README.md](../README.md)。
 
