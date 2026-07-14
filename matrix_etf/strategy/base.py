@@ -1,39 +1,49 @@
-"""策略基类模块：定义所有 ETF 选股策略的抽象接口。"""
+"""策略基类模块：定义各类金融产品选股策略的抽象接口。"""
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from matrix_etf.core.config import Settings
-from matrix_etf.data.engine import DataEngine
+
+if TYPE_CHECKING:
+    from matrix_etf.data.engine import DataEngine
+    from matrix_etf.data.stock_engine import StockDataEngine
 
 
 class BaseStrategy(ABC):
-    """ETF 选股策略抽象基类。
+    """选股策略抽象基类。
 
-    所有具体策略必须继承此类并实现 run() 方法。
+    所有具体策略必须继承此类并实现 run() 方法。ETF 与股票策略共享该基类，
+    通过传入不同的数据引擎（``DataEngine`` / ``StockDataEngine``）复用相同的
+    ``get_ohlcv`` / ``get_local_symbols`` 读取接口。
 
     Attributes:
         webhook_key: 策略对应的飞书 webhook 标识，用于路由到不同机器人。
             默认为 'default'，将使用 Settings.feishu_webhook_url。
-            子类可覆盖此属性以路由到专属机器人，例如 'rps'。
+            子类可覆盖此属性以路由到专属机器人，例如 'rps'、'stock_turtle'。
     """
 
     webhook_key: str = "default"
 
-    def __init__(self, engine: DataEngine, settings: Settings) -> None:
+    def __init__(
+        self,
+        engine: "DataEngine | StockDataEngine",
+        settings: Settings,
+    ) -> None:
         """
         初始化策略。
 
         Args:
-            engine: DataEngine 实例，用于读取行情数据。
+            engine: 数据引擎实例（ETF 或股票），用于读取行情数据。
             settings: Settings 实例，用于读取配置。
         """
         self.engine = engine
         self.settings = settings
 
     def _passes_liquidity(self, amount: pd.Series) -> bool:
-        """近 20 日平均成交额是否达到流动性门槛。"""
+        """近 20 日平均成交额是否达到流动性门槛（ETF 策略使用）。"""
         if len(amount) < 20:
             return False
         avg_amount = amount.tail(20).mean()
@@ -42,10 +52,10 @@ class BaseStrategy(ABC):
     @abstractmethod
     def run(self) -> list[str]:
         """
-        执行选股逻辑，返回选中的 ETF 代码列表。
+        执行选股逻辑，返回选中的标的代码列表。
 
         Returns:
-            满足策略条件的 ETF 代码列表，如 ['510300.SH', '159915.SZ']。
+            满足策略条件的标的代码列表，如 ['510300.SH', '600519.SH']。
             无选股结果时返回空列表。
         """
         ...

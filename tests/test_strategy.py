@@ -12,15 +12,15 @@ from hypothesis import strategies as st
 
 from matrix_etf.core.config import Settings
 from matrix_etf.data.engine import DataEngine
-from matrix_etf.strategy.breakout_volume import BreakoutVolumeStrategy
-from matrix_etf.strategy.mega7_rotation import (
+from matrix_etf.strategy.etf.breakout_volume import BreakoutVolumeStrategy
+from matrix_etf.strategy.etf.mean_reversion import MeanReversionStrategy
+from matrix_etf.strategy.etf.mega7_rotation import (
     LowVolTrendRotationStrategy,
     RiskAdjustedMomentumStrategy,
     VolumeConfirmedMomentumStrategy,
 )
-from matrix_etf.strategy.mean_reversion import MeanReversionStrategy
-from matrix_etf.strategy.rps_momentum import RpsMomentumStrategy
-from matrix_etf.strategy.trend_ma import TrendMaStrategy
+from matrix_etf.strategy.etf.rps_momentum import RpsMomentumStrategy
+from matrix_etf.strategy.etf.trend_ma import TrendMaStrategy
 
 ALL_STRATEGIES = [
     RpsMomentumStrategy,

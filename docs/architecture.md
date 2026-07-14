@@ -1,11 +1,13 @@
 # Matrix 架构设计 | Architecture
 
-> Matrix 是一套 ETF 推荐系统：使用 [tickflow](https://github.com/tickflow-org/tickflow)
-> 作为唯一行情数据源，收盘后同步沪深 ETF 日线，运行技术型选 ETF 策略，并把结果推送到飞书。
+> Matrix 是一套 ETF + A 股推荐系统：使用 [tickflow](https://github.com/tickflow-org/tickflow)
+> 作为唯一行情数据源，收盘后同步日线，运行技术型选股策略，并把结果推送到飞书。
 
-本项目在工程结构上参考 NebulaStock，但**数据源完全改为 tickflow，彻底摒弃 baostock**，
-且选股标的从个股改为 **ETF**。由于 ETF 没有 PE/PB/ROE 等基本面字段，Matrix 的策略
-体系完全基于**价格、成交量、成交额**等技术与动量指标。
+本项目在工程结构上参考 NebulaStock，但**数据源完全改为 tickflow，彻底摒弃 baostock**。
+系统按金融产品种类拆成两条**完全独立**的流水线：ETF 线（`main.py` + `DataEngine` +
+`strategy/etf/`）与股票线（`stock_main.py` + `StockDataEngine` + `strategy/stock/`），
+各自维护数据库、标的池与策略集。两条线均以**价格、成交量、成交额**等技术与动量指标为主
+（ETF 无 PE/PB/ROE 等基本面字段；股票线目前也只用价量信号，暂不接入基本面）。
 
 ---
 
@@ -200,3 +202,38 @@ flowchart TD
 | 指标预聚合进 `etf_metrics` | 报告与筛选无需每次重算长周期指标 |
 | SQLite 本地存储 | 单机部署、可直接拷贝迁移、零运维 |
 | systemd timer 而非 crontab | 与阿里云 Linux 原生集成、日志统一、可持久化补跑 |
+
+---
+
+## 7. 股票线（stock_main.py）
+
+股票线与 ETF 线**完全解耦**：独立入口、独立数据库、独立标的池、独立策略集，
+共享的是 tickflow 客户端工厂（`data/tickflow_client.py`）、策略基类
+（`strategy/base.py`）、飞书通知（`notify/feishu.py`）与交易日历。
+
+```mermaid
+flowchart LR
+    subgraph ETF["ETF 线"]
+        E1["main.py"] --> E2["DataEngine<br/>data/matrix_etf.db"]
+        E2 --> E3["strategy/etf/*<br/>7 套策略 + 四梯队报告"]
+    end
+    subgraph STK["股票线"]
+        K1["stock_main.py"] --> K2["StockDataEngine<br/>data/matrix_stock.db"]
+        K2 --> K3["strategy/stock/*<br/>6 套策略"]
+    end
+    E2 -. 共享 .-> TF["tickflow_client.py"]
+    K2 -. 共享 .-> TF
+    E3 -. 共享 .-> FS["FeishuNotifier"]
+    K3 -. 共享 .-> FS
+```
+
+- 标的池：`CN_Equity_A`（tickflow 免费服务，约 5500 只全 A 股，symbol 形如 `600519.SH`）。
+- 数据表：`stock_daily`（`(symbol, date)` 唯一约束，upsert）与 `stock_basic`（基础信息 + 名称）。
+  股票线不计算 `*_metrics` 指标——各策略直接从 `get_ohlcv` 现算所需指标。
+- 六套策略（原创重写，思路借鉴 NebulaStock）：均线放量 `stock_ma_volume`、海龟突破
+  `stock_turtle`、高旗形整理 `stock_flag`、涨停洗盘 `stock_shakeout`、上升趋势跌停
+  `stock_limit_down`、RPS 动量突破 `stock_rps`。webhook key 统一带 `stock_` 前缀，
+  与 ETF 推送互不干扰。
+- RPS 为**横截面**策略：一次性读取全市场 `stock_daily` 做涨幅百分位排名 + 阶段新高突破。
+
+股票策略详细规则见 [stock_strategy.md](stock_strategy.md)。

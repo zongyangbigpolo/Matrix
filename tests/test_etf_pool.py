@@ -7,7 +7,7 @@ import pandas as pd
 
 from matrix_etf.core.config import Settings
 from matrix_etf.data.engine import DataEngine
-from matrix_etf.strategy.etf_pool import EtfPoolReport
+from matrix_etf.strategy.etf.etf_pool import EtfPoolReport
 
 
 def make_engine(tmp_dir: str) -> DataEngine:

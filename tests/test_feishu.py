@@ -102,6 +102,21 @@ def test_xueqiu_code_mapping() -> None:
     """tickflow symbol 应正确转换为雪球代码。"""
     assert FeishuNotifier._to_xueqiu_code("510300.SH") == "SH510300"
     assert FeishuNotifier._to_xueqiu_code("159915.SZ") == "SZ159915"
+    assert FeishuNotifier._to_xueqiu_code("600519.SH") == "SH600519"
+    # 无后缀时按 A 股代码首位推断（6→SH，0/3→SZ，4/8→BJ）
+    assert FeishuNotifier._to_xueqiu_code("600519") == "SH600519"
+    assert FeishuNotifier._to_xueqiu_code("000001") == "SZ000001"
+    assert FeishuNotifier._to_xueqiu_code("830799") == "BJ830799"
+
+
+def test_stock_category_card_uses_stock_labels() -> None:
+    """category='Stock' 时卡片标题与文案应体现「个股」。"""
+    settings = make_settings()
+    notifier = FeishuNotifier(settings)
+    card = notifier._build_card(["600519.SH"], "TurtleTradeStrategy", category="Stock")
+    text = json.dumps(card, ensure_ascii=False)
+    assert "Matrix Stock Signals | TurtleTradeStrategy" in text
+    assert "候选个股" in text
 
 
 def test_retry_on_request_exception_then_success() -> None:

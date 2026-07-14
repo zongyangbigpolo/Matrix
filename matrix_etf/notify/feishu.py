@@ -1,4 +1,4 @@
-"""飞书通知模块：将 ETF 选股结果通过 Webhook 推送至飞书群。"""
+"""飞书通知模块：将选股结果（ETF / 股票）通过 Webhook 推送至飞书群。"""
 
 import json
 import time
@@ -26,34 +26,46 @@ class FeishuNotifier:
 
         Args:
             settings: Settings 实例，提供 Webhook URL 配置。
-            engine: 可选 DataEngine，用于查询 ETF 名称（缺省时仅展示代码）。
+            engine: 可选数据引擎（ETF 或股票），用于查询标的名称（缺省时仅展示代码）。
         """
         self.settings = settings
         self.engine = engine
 
     @staticmethod
     def _to_xueqiu_code(symbol: str) -> str:
-        """将 tickflow symbol（如 510300.SH）转为雪球格式（SH510300）。"""
+        """将 tickflow symbol（如 510300.SH / 600519.SH）转为雪球格式（SH510300）。"""
         if "." in symbol:
             code, suffix = symbol.split(".", 1)
             return f"{suffix.upper()}{code}"
-        # 无后缀时按 A 股 ETF 代码规则推断
-        if symbol.startswith("5"):
+        # 无后缀时按 A 股代码规则推断
+        if symbol.startswith("5") or symbol.startswith("6"):
             return f"SH{symbol}"
+        if symbol.startswith("4") or symbol.startswith("8"):
+            return f"BJ{symbol}"
         return f"SZ{symbol}"
 
     def _get_names(self, symbols: list[str]) -> dict[str, str]:
-        """返回 {symbol: name} 映射，优先使用本地 etf_basic。"""
+        """返回 {symbol: name} 映射，优先使用数据引擎（stock_basic / etf_basic）。"""
         if self.engine is not None:
-            try:
-                return self.engine.get_etf_names(symbols)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"ETF 名称查询失败，回退为代码：{exc}")
+            lookup = getattr(self.engine, "get_names", None) or getattr(
+                self.engine, "get_etf_names", None
+            )
+            if lookup is not None:
+                try:
+                    return lookup(symbols)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"标的名称查询失败，回退为代码：{exc}")
         return {symbol: symbol for symbol in symbols}
 
-    def _build_card(self, symbols: list[str], strategy_name: str) -> dict:
+    def _build_card(
+        self,
+        symbols: list[str],
+        strategy_name: str,
+        category: str = "ETF",
+    ) -> dict:
         today = date.today().strftime("%Y-%m-%d")
         names = self._get_names(symbols)
+        noun = "个股" if category.lower() in ("stock", "个股", "股票") else category
 
         links: list[str] = []
         for symbol in symbols:
@@ -69,7 +81,7 @@ class FeishuNotifier:
                 "header": {
                     "title": {
                         "tag": "plain_text",
-                        "content": f"Matrix ETF Signals | {strategy_name}",
+                        "content": f"Matrix {category} Signals | {strategy_name}",
                     },
                     "template": "turquoise",
                 },
@@ -90,7 +102,7 @@ class FeishuNotifier:
                         "tag": "div",
                         "text": {
                             "tag": "lark_md",
-                            "content": f"**候选 ETF：**\n{symbol_text}",
+                            "content": f"**候选{noun}：**\n{symbol_text}",
                         },
                     },
                 ],
@@ -102,6 +114,7 @@ class FeishuNotifier:
         symbols: list[str],
         strategy_name: str,
         webhook_key: str = "default",
+        category: str = "ETF",
     ) -> None:
         """
         将选股结果格式化为飞书卡片消息并 POST 至对应 Webhook。
@@ -113,12 +126,13 @@ class FeishuNotifier:
             symbols: 选股结果代码列表。
             strategy_name: 策略名称，用于卡片标题。
             webhook_key: 策略标识，用于路由到对应飞书机器人。
+            category: 产品类别（如 'ETF'、'Stock'），用于卡片标题与文案。
 
         Raises:
             HTTP 请求异常、非 JSON 响应或飞书错误码会记录日志，不向主流程抛出。
         """
         url = self.settings.get_webhook_url(webhook_key)
-        payload = self._build_card(symbols, strategy_name)
+        payload = self._build_card(symbols, strategy_name, category)
         attempts = max(1, int(self.settings.feishu_retry_attempts))
 
         for attempt in range(1, attempts + 1):
@@ -143,7 +157,9 @@ class FeishuNotifier:
                     )
                 else:
                     if resp.status_code == 200 and resp_json.get("code") == 0:
-                        logger.info(f"飞书推送成功 [{webhook_key}]，共 {len(symbols)} 只 ETF")
+                        logger.info(
+                            f"飞书推送成功 [{webhook_key}]，共 {len(symbols)} 只标的"
+                        )
                         return
                     retryable = resp.status_code in (429,) or resp.status_code >= 500
                     message = (

@@ -30,16 +30,16 @@ from matrix_etf.core.trading_calendar import get_non_trading_day_reason  # noqa:
 from matrix_etf.data.engine import DataEngine  # noqa: E402
 from matrix_etf.notify.feishu import FeishuNotifier  # noqa: E402
 from matrix_etf.strategy.base import BaseStrategy  # noqa: E402
-from matrix_etf.strategy.breakout_volume import BreakoutVolumeStrategy  # noqa: E402
-from matrix_etf.strategy.etf_pool import EtfPoolReport  # noqa: E402
-from matrix_etf.strategy.mega7_rotation import (  # noqa: E402
+from matrix_etf.strategy.etf.breakout_volume import BreakoutVolumeStrategy  # noqa: E402
+from matrix_etf.strategy.etf.etf_pool import EtfPoolReport  # noqa: E402
+from matrix_etf.strategy.etf.mean_reversion import MeanReversionStrategy  # noqa: E402
+from matrix_etf.strategy.etf.mega7_rotation import (  # noqa: E402
     LowVolTrendRotationStrategy,
     RiskAdjustedMomentumStrategy,
     VolumeConfirmedMomentumStrategy,
 )
-from matrix_etf.strategy.mean_reversion import MeanReversionStrategy  # noqa: E402
-from matrix_etf.strategy.rps_momentum import RpsMomentumStrategy  # noqa: E402
-from matrix_etf.strategy.trend_ma import TrendMaStrategy  # noqa: E402
+from matrix_etf.strategy.etf.rps_momentum import RpsMomentumStrategy  # noqa: E402
+from matrix_etf.strategy.etf.trend_ma import TrendMaStrategy  # noqa: E402
 
 
 def _parse_symbols(value: str | None) -> list[str] | None:

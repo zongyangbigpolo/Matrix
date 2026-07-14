@@ -20,12 +20,22 @@ class Settings(BaseSettings):
     tickflow_api_key: str = ""
     etf_universe: str = "CN_ETF"
 
+    # 股票（A 股）数据源与存储（与 ETF 完全解耦：独立数据库文件与标的池）
+    stock_db_path: str = "data/matrix_stock.db"
+    stock_universe: str = "CN_Equity_A"
+
     # 策略参数
     liquidity_min_amount: float = 50_000_000.0
     rps_period: int = 120
     rps_threshold: float = 90.0
     breakout_period: int = 60
     volume_surge: float = 1.5
+
+    # 股票策略参数（日线交易日口径）
+    stock_liquidity_min_amount: float = 100_000_000.0
+    stock_ma_volume_surge: float = 1.5
+    stock_rps_period: int = 120
+    stock_rps_threshold: float = 90.0
 
     # Mega7 风格轮动策略参数（日线交易日口径）
     mega7_momentum_periods: str = "21,63,126"

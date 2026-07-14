@@ -1,24 +1,33 @@
 # Matrix
 
-> ETF 推荐系统：tickflow 数据同步 + SQLite 本地存储 + 多策略选 ETF + 飞书推送。
+> ETF + A 股推荐系统：tickflow 数据同步 + SQLite 本地存储 + 多策略选股 + 飞书推送。
 
 Matrix 面向阿里云 ECS / Alibaba Cloud Linux 部署。系统每天收盘后从
-[tickflow](https://github.com/tickflow-org/tickflow) 同步沪深 ETF 日线，运行内置技术型策略，
-并把候选 ETF 推送到飞书群。**数据源完全使用 tickflow，不依赖 baostock。**
+[tickflow](https://github.com/tickflow-org/tickflow) 同步行情，运行内置技术型策略，
+并把候选标的推送到飞书群。**数据源完全使用 tickflow，不依赖 baostock。**
+
+系统按金融产品种类拆成两条**完全独立**的流水线：
+
+- **ETF 线**（`main.py`）：`CN_ETF` 标的池 → `data/matrix_etf.db` → ETF 策略。
+- **股票线**（`stock_main.py`）：`CN_Equity_A` 全 A 股标的池 → `data/matrix_stock.db` → 股票策略。
+
+两条线各自维护数据库、标的池与策略集，互不影响，可独立部署与定时。
 
 ## 功能概览
 
-- 使用 tickflow 拉取 `CN_ETF` 标的池、ETF 日 K 与基础信息（免费服务，无需注册）。
-- 使用本地 SQLite 保存数据，默认路径 `data/matrix_etf.db`。
-- 支持全量回填、日常增量同步、标的池同步、指标刷新与四梯队报告。
-- 内置七套技术策略：相对强度动量、均线趋势、放量突破、强势回踩，
+- 使用 tickflow 拉取 ETF（`CN_ETF`）与 A 股（`CN_Equity_A`）标的池、日 K 与基础信息（免费服务，无需注册）。
+- 使用本地 SQLite 保存数据，ETF 默认 `data/matrix_etf.db`，股票默认 `data/matrix_stock.db`。
+- 支持全量回填、日常增量同步、标的池同步、缺口补拉（ETF 另有指标刷新与四梯队报告）。
+- 内置七套 **ETF** 技术策略：相对强度动量、均线趋势、放量突破、强势回踩，
   以及 Mega7 风格的风险调整动量、成交额确认动量、低波趋势轮动。
+- 内置六套 **股票** 技术策略：均线放量、海龟突破、高旗形整理、涨停洗盘、上升趋势跌停、RPS 动量突破。
+- 策略按金融产品种类分目录管理：`matrix_etf/strategy/etf/` 与 `matrix_etf/strategy/stock/`。
 - 支持按策略路由到不同飞书机器人。
 - 提供 Alibaba Cloud Linux 可用的运行脚本和 systemd 定时任务模板。
 
-由于 ETF 没有 PE/PB/ROE 等基本面字段，Matrix 的策略体系完全基于价格、成交量与成交额。
+Matrix 的策略体系以价格、成交量与成交额为主。
 详见 [docs/architecture.md](docs/architecture.md)、[docs/data_source.md](docs/data_source.md)、
-[docs/etf_strategy.md](docs/etf_strategy.md)。
+[docs/etf_strategy.md](docs/etf_strategy.md)、[docs/stock_strategy.md](docs/stock_strategy.md)。
 
 ## 运行环境
 
@@ -46,6 +55,12 @@ uv run python main.py --backfill
 
 # 4. 日常运行（增量同步 + 跑策略 + 推送）
 uv run python main.py
+
+# 5. （可选）股票线：首次回填 A 股历史（约 5500 只，耗时较长）
+uv run python stock_main.py --backfill
+
+# 6. （可选）股票线日常运行
+uv run python stock_main.py
 ```
 
 不使用 uv 时，可用标准 venv：
@@ -59,6 +74,8 @@ python main.py --backfill
 
 ## 命令行用法
 
+### ETF 线（`main.py`）
+
 | 命令 | 说明 |
 |------|------|
 | `python main.py` | 日常模式：增量同步 + 刷新指标 + 跑策略 + 推送（本地无数据时自动回填） |
@@ -70,6 +87,16 @@ python main.py --backfill
 | `python main.py --report-limit 20` | 控制报告每梯队展示数量 |
 | `python main.py --force` | 日常模式下忽略周末/休市日保护，强制运行 |
 
+### 股票线（`stock_main.py`，与 ETF 线完全解耦）
+
+| 命令 | 说明 |
+|------|------|
+| `python stock_main.py` | 日常模式：增量同步 + 跑股票策略 + 推送（本地无数据时自动回填） |
+| `python stock_main.py --backfill` | 回填模式：同步标的池 + 拉取 CN_Equity_A 全量历史日 K |
+| `python stock_main.py --sync-universe` | 仅同步股票标的池与基础信息（`stock_basic`） |
+| `python stock_main.py --symbols 600519.SH,000001.SZ` | 仅处理指定股票 |
+| `python stock_main.py --force` | 日常模式下忽略周末/休市日保护，强制运行 |
+
 ## 配置项（.env）
 
 | 变量 | 必填 | 默认 | 说明 |
@@ -79,11 +106,17 @@ python main.py --backfill
 | `START_DATE` | 否 | `2020-01-01` | 回填起始日期 |
 | `TICKFLOW_API_KEY` | 否 | 空 | 留空用免费服务；非空用完整服务 |
 | `ETF_UNIVERSE` | 否 | `CN_ETF` | tickflow ETF 标的池 id |
-| `LIQUIDITY_MIN_AMOUNT` | 否 | `50000000` | 流动性门槛：近 20 日平均成交额（元） |
+| `STOCK_DB_PATH` | 否 | `data/matrix_stock.db` | 股票线 SQLite 路径（与 ETF 库独立） |
+| `STOCK_UNIVERSE` | 否 | `CN_Equity_A` | tickflow A 股标的池 id |
+| `LIQUIDITY_MIN_AMOUNT` | 否 | `50000000` | ETF 流动性门槛：近 20 日平均成交额（元） |
 | `RPS_PERIOD` | 否 | `120` | 动量/RPS 回看天数 |
 | `RPS_THRESHOLD` | 否 | `90` | RPS 百分位阈值 |
 | `BREAKOUT_PERIOD` | 否 | `60` | 突破回看天数 |
 | `VOLUME_SURGE` | 否 | `1.5` | 放量倍数 |
+| `STOCK_LIQUIDITY_MIN_AMOUNT` | 否 | `100000000` | 股票流动性门槛：当日成交额（元） |
+| `STOCK_MA_VOLUME_SURGE` | 否 | `1.5` | 股票均线放量策略的放量倍数 |
+| `STOCK_RPS_PERIOD` | 否 | `120` | 股票 RPS 回看天数 |
+| `STOCK_RPS_THRESHOLD` | 否 | `90` | 股票 RPS 百分位阈值 |
 | `MEGA7_MOMENTUM_PERIODS` | 否 | `21,63,126` | Mega7 风格多周期动量窗口（日） |
 | `MEGA7_TOP_N` | 否 | `10` | Mega7 风格策略最多输出数量 |
 | `MEGA7_DOWNSIDE_THRESHOLD` | 否 | `0.5` | 下行频率过滤阈值 |
@@ -92,7 +125,7 @@ python main.py --backfill
 | `FEISHU_RETRY_ATTEMPTS` | 否 | `3` | 飞书请求对网络/临时错误的最大尝试次数 |
 | `STRATEGY_WEBHOOK_<KEY>` | 否 | — | 策略专属 webhook，KEY 见下表 |
 
-策略与 webhook_key 对应关系：
+ETF 策略与 webhook_key 对应关系：
 
 | 策略 | webhook_key |
 |------|-------------|
@@ -103,6 +136,17 @@ python main.py --backfill
 | RiskAdjustedMomentumStrategy | `mega7_momentum` |
 | VolumeConfirmedMomentumStrategy | `mega7_volume` |
 | LowVolTrendRotationStrategy | `mega7_lowvol` |
+
+股票策略与 webhook_key 对应关系（均带 `stock_` 前缀，与 ETF 推送解耦）：
+
+| 策略 | webhook_key |
+|------|-------------|
+| MaVolumeStrategy | `stock_ma_volume` |
+| TurtleTradeStrategy | `stock_turtle` |
+| HighTightFlagStrategy | `stock_flag` |
+| LimitUpShakeoutStrategy | `stock_shakeout` |
+| UptrendLimitDownStrategy | `stock_limit_down` |
+| RpsBreakoutStrategy | `stock_rps` |
 
 ## 部署到 Alibaba Cloud Linux
 
@@ -197,12 +241,19 @@ sudo systemctl start matrix-etf.service
 
 ```
 Matrix/
-├── main.py                     # CLI 入口
+├── main.py                     # ETF 线 CLI 入口
+├── stock_main.py               # 股票线 CLI 入口（与 ETF 线解耦）
 ├── matrix_etf/
-│   ├── core/                   # 配置 + 日志
-│   ├── data/engine.py          # tickflow 同步 + SQLite 存储
-│   ├── strategy/               # 七套策略 + 四梯队报告
-│   └── notify/feishu.py        # 飞书推送
+│   ├── core/                   # 配置 + 日志 + 交易日历
+│   ├── data/
+│   │   ├── engine.py           # ETF：tickflow 同步 + SQLite 存储
+│   │   ├── stock_engine.py     # 股票：tickflow 同步 + SQLite 存储
+│   │   └── tickflow_client.py  # tickflow 客户端工厂（两引擎共享）
+│   ├── strategy/
+│   │   ├── base.py             # 共享策略基类
+│   │   ├── etf/                # ETF 策略（按产品种类划分）+ 四梯队报告
+│   │   └── stock/              # 股票策略（按产品种类划分）
+│   └── notify/feishu.py        # 飞书推送（ETF / 股票通用）
 ├── deploy/systemd/             # systemd service + timer
 ├── scripts/run_matrix.sh       # 运行脚本（flock 防并发）
 ├── docs/                       # 架构 / 数据源 / 策略文档
@@ -225,7 +276,7 @@ pytest
 
 ## 免责声明
 
-本项目与其输出仅用于量化研究与学习，不构成任何投资建议。ETF 投资有风险，入市需谨慎。
+本项目与其输出仅用于量化研究与学习，不构成任何投资建议。ETF 与股票投资均有风险，入市需谨慎。
 
 ## License
 
