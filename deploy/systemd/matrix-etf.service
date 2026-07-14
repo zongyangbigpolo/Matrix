@@ -1,0 +1,12 @@
+[Unit]
+Description=Matrix daily ETF recommendation
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/Matrix
+EnvironmentFile=-/opt/Matrix/.env
+ExecStart=/opt/Matrix/scripts/run_matrix.sh
+TimeoutStartSec=2h
+Nice=5

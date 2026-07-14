@@ -1,0 +1,48 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 虚拟环境
+venv/
+.venv/
+env/
+ENV/
+
+# IDE 配置
+.DS_Store
+.idea/
+.vscode/
+.kiro
+
+# 数据库文件
+data/
+data/*.db
+
+# 环境变量
+.env
+
+# 打包构建
+*.egg-info/
+dist/
+build/
+
+# 测试与工具缓存
+.pytest_cache/
+.ruff_cache/
+
+# 日志
+logs/
+*.log
+
+# 运行报告
+reports/
+reports/*.md
+
+# Linux 运行锁
+.matrix_etf.lock
+
+# Hypothesis 测试缓存
+.hypothesis/
