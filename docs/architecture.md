@@ -37,7 +37,8 @@ flowchart TD
         S2["TrendMa"]
         S3["BreakoutVolume"]
         S4["MeanReversion"]
-        S5["EtfPoolReport"]
+        S5["Mega7 风格轮动<br/>RiskAdj/Volume/LowVol"]
+        S6["EtfPoolReport"]
     end
 
     subgraph NOTIFY["通知层 matrix_etf/notify"]
@@ -85,7 +86,7 @@ sequenceDiagram
     Eng->>DB: upsert etf_daily
     Main->>Eng: refresh_metrics(symbols)
     Eng->>DB: 计算并写入 etf_metrics
-    loop 每个策略
+    loop 每个策略（7套）
         Main->>Strat: run()
         Strat->>DB: 读取 etf_daily / etf_metrics
         Strat-->>Main: 选出 ETF 列表
@@ -159,10 +160,12 @@ flowchart LR
     F --> T["TrendMa<br/>均线多头排列"]
     F --> B["BreakoutVolume<br/>放量突破新高"]
     F --> R["MeanReversion<br/>强势回踩反弹"]
+    F --> G["Mega7Rotation<br/>风险调整/成交额/低波轮动"]
     M --> P["EtfPoolReport<br/>四梯队综合打分"]
     T --> P
     B --> P
     R --> P
+    G --> P
     P --> OUT["飞书推送 + Markdown 报告"]
 ```
 

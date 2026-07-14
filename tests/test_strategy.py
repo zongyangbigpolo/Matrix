@@ -13,6 +13,11 @@ from hypothesis import strategies as st
 from matrix_etf.core.config import Settings
 from matrix_etf.data.engine import DataEngine
 from matrix_etf.strategy.breakout_volume import BreakoutVolumeStrategy
+from matrix_etf.strategy.mega7_rotation import (
+    LowVolTrendRotationStrategy,
+    RiskAdjustedMomentumStrategy,
+    VolumeConfirmedMomentumStrategy,
+)
 from matrix_etf.strategy.mean_reversion import MeanReversionStrategy
 from matrix_etf.strategy.rps_momentum import RpsMomentumStrategy
 from matrix_etf.strategy.trend_ma import TrendMaStrategy
@@ -22,6 +27,9 @@ ALL_STRATEGIES = [
     TrendMaStrategy,
     BreakoutVolumeStrategy,
     MeanReversionStrategy,
+    RiskAdjustedMomentumStrategy,
+    VolumeConfirmedMomentumStrategy,
+    LowVolTrendRotationStrategy,
 ]
 
 
@@ -101,3 +109,46 @@ def test_liquidity_filter_excludes_illiquid() -> None:
                 for strategy_cls in ALL_STRATEGIES:
                     result = strategy_cls(engine=engine, settings=settings).run()
                     assert result == []
+
+
+def test_risk_adjusted_momentum_selects_positive_multi_period_trend() -> None:
+    """多周期正动量、低下行频率且流动性达标时，风险调整动量策略应选出 ETF。"""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        settings = make_settings(tmp_dir)
+        engine = DataEngine(settings)
+        df = _uptrend_frame(n=220, step=0.03)
+
+        with patch.object(engine, "get_local_symbols", return_value=["510300.SH"]):
+            with patch.object(engine, "get_ohlcv", return_value=df):
+                result = RiskAdjustedMomentumStrategy(engine=engine, settings=settings).run()
+
+    assert result == ["510300.SH"]
+
+
+def test_volume_confirmed_momentum_requires_short_volume_expansion() -> None:
+    """短期成交额高于长期均值时，成交额确认动量策略应选出 ETF。"""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        settings = make_settings(tmp_dir)
+        engine = DataEngine(settings)
+        df = _uptrend_frame(n=220, step=0.03)
+        df["amount"] = [8e7] * 160 + [1.6e8] * 60
+
+        with patch.object(engine, "get_local_symbols", return_value=["510300.SH"]):
+            with patch.object(engine, "get_ohlcv", return_value=df):
+                result = VolumeConfirmedMomentumStrategy(engine=engine, settings=settings).run()
+
+    assert result == ["510300.SH"]
+
+
+def test_low_vol_trend_rotation_selects_bullish_low_downside_etf() -> None:
+    """多头排列、60日收益为正且下行频率低时，低波趋势轮动策略应选出 ETF。"""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        settings = make_settings(tmp_dir)
+        engine = DataEngine(settings)
+        df = _uptrend_frame(n=220, step=0.02)
+
+        with patch.object(engine, "get_local_symbols", return_value=["510300.SH"]):
+            with patch.object(engine, "get_ohlcv", return_value=df):
+                result = LowVolTrendRotationStrategy(engine=engine, settings=settings).run()
+
+    assert result == ["510300.SH"]

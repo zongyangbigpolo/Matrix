@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -127,3 +128,96 @@ def test_refresh_metrics_computes_row() -> None:
         assert len(frame) == 1
         assert frame.iloc[0]["symbol"] == "510300.SH"
         assert frame.iloc[0]["sample_days"] == 60
+
+
+def test_backfill_filters_start_date() -> None:
+    """backfill 应只入库 START_DATE 之后（含当日）的日 K。"""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        settings = Settings(
+            db_path=str(Path(tmp_dir) / "test.db"),
+            start_date="2026-01-02",
+            feishu_webhook_url="https://example.com/hook",
+        )
+        engine = DataEngine(settings)
+        raw = pd.DataFrame([
+            {
+                "trade_date": "2026-01-01",
+                "open": 10.0,
+                "high": 10.1,
+                "low": 9.9,
+                "close": 10.0,
+                "volume": 1000.0,
+                "amount": 1e8,
+                "name": "测试ETF",
+            },
+            {
+                "trade_date": "2026-01-02",
+                "open": 11.0,
+                "high": 11.1,
+                "low": 10.9,
+                "close": 11.0,
+                "volume": 1000.0,
+                "amount": 1e8,
+                "name": "测试ETF",
+            },
+        ])
+
+        with patch.object(engine, "_fetch_batch", return_value={"510300.SH": raw}):
+            engine.backfill(["510300.SH"])
+
+        df = engine.get_ohlcv("510300.SH")
+        assert df["date"].tolist() == ["2026-01-02"]
+
+
+def test_sync_basic_info_upserts_requested_symbols() -> None:
+    """sync_basic_info 应能为指定 symbol 写入基础信息，不依赖完整标的池。"""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        engine, _ = make_engine_in(tmp_dir)
+
+        class _Instruments:
+            @staticmethod
+            def get(symbol: str) -> dict:
+                return {
+                    "symbol": symbol,
+                    "code": "510300",
+                    "exchange": "SH",
+                    "name": "沪深300ETF",
+                    "type": "etf",
+                    "ext": {"listing_date": "2012-05-28"},
+                }
+
+        class _Client:
+            instruments = _Instruments()
+
+        with patch.object(engine, "_client", return_value=_Client()):
+            assert engine.sync_basic_info(["510300.SH"]) == 1
+
+        assert engine.get_etf_names(["510300.SH"]) == {"510300.SH": "沪深300ETF"}
+
+
+def test_repair_latest_gaps_refetches_missing_symbol() -> None:
+    """增量后缺最新交易日的 ETF 应被扩大窗口补拉一次。"""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        engine, _ = make_engine_in(tmp_dir)
+        engine._upsert_daily(pd.DataFrame([
+            _daily_row("510300.SH", "2026-05-07", 10.0),
+            _daily_row("159915.SZ", "2026-05-06", 20.0),
+        ]))
+        raw = pd.DataFrame([
+            {
+                "trade_date": "2026-05-07",
+                "open": 21.0,
+                "high": 21.1,
+                "low": 20.9,
+                "close": 21.0,
+                "volume": 1000.0,
+                "amount": 1e8,
+            }
+        ])
+
+        with patch.object(engine, "_fetch_batch", return_value={"159915.SZ": raw}):
+            remaining = engine.repair_latest_gaps(["510300.SH", "159915.SZ"])
+
+        assert remaining == []
+        coverage = engine.get_latest_daily_coverage_for_symbols(["510300.SH", "159915.SZ"])
+        assert coverage["latest_symbols"] == 2

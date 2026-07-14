@@ -13,6 +13,7 @@ import argparse
 import os
 import socket
 import sys
+from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -25,11 +26,17 @@ socket.setdefaulttimeout(30.0)
 
 from matrix_etf.core.config import get_settings  # noqa: E402
 from matrix_etf.core.logger import get_logger  # noqa: E402
+from matrix_etf.core.trading_calendar import get_non_trading_day_reason  # noqa: E402
 from matrix_etf.data.engine import DataEngine  # noqa: E402
 from matrix_etf.notify.feishu import FeishuNotifier  # noqa: E402
 from matrix_etf.strategy.base import BaseStrategy  # noqa: E402
 from matrix_etf.strategy.breakout_volume import BreakoutVolumeStrategy  # noqa: E402
 from matrix_etf.strategy.etf_pool import EtfPoolReport  # noqa: E402
+from matrix_etf.strategy.mega7_rotation import (  # noqa: E402
+    LowVolTrendRotationStrategy,
+    RiskAdjustedMomentumStrategy,
+    VolumeConfirmedMomentumStrategy,
+)
 from matrix_etf.strategy.mean_reversion import MeanReversionStrategy  # noqa: E402
 from matrix_etf.strategy.rps_momentum import RpsMomentumStrategy  # noqa: E402
 from matrix_etf.strategy.trend_ma import TrendMaStrategy  # noqa: E402
@@ -42,15 +49,15 @@ def _parse_symbols(value: str | None) -> list[str] | None:
     return symbols or None
 
 
-def _resolve_symbols(engine: DataEngine, requested: list[str] | None) -> list[str]:
-    return requested or engine.get_universe_symbols()
-
-
 def _run_backfill(engine: DataEngine, requested: list[str] | None, logger) -> None:
     logger.info("进入回填模式...")
-    symbols = _resolve_symbols(engine, requested)
+    if requested:
+        symbols = requested
+        engine.sync_basic_info(symbols)
+    else:
+        symbols = engine.sync_universe_and_get_symbols()
     engine.backfill(symbols)
-    engine.refresh_metrics(engine.get_local_symbols())
+    engine.refresh_metrics(symbols)
     logger.info("Matrix 回填模式运行完成（ETF 名称已随日 K 自动入库）")
 
 
@@ -109,6 +116,11 @@ def main() -> None:
         default=30,
         help="四梯队报告每个梯队最多展示的 ETF 数",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="日常模式下即使今天是周末或配置的休市日也继续运行",
+    )
     args = parser.parse_args()
 
     try:
@@ -124,11 +136,24 @@ def main() -> None:
             return
 
         # ── 日常模式：增量同步 + 刷新指标 + 跑策略 + 推送 ──
-        symbols = requested_symbols or engine.get_local_symbols()
-        if not symbols:
+        if settings.skip_non_trading_day and not args.force:
+            reason = get_non_trading_day_reason(date.today(), settings)
+            if reason:
+                logger.info(f"今日为非交易日（{reason}），跳过日常同步；如需运行请加 --force")
+                return
+
+        if requested_symbols:
+            engine.sync_basic_info(requested_symbols)
+            symbols = requested_symbols
+        else:
+            symbols = engine.sync_universe_and_get_symbols()
+
+        local_symbols = set(engine.get_local_symbols())
+        has_local_data = any(symbol in local_symbols for symbol in symbols)
+        if not has_local_data:
             logger.info("本地暂无 ETF 数据，自动执行首次回填...")
-            _run_backfill(engine, requested_symbols, logger)
-            symbols = engine.get_local_symbols()
+            engine.backfill(symbols)
+            engine.refresh_metrics(symbols)
         else:
             logger.info("开始增量同步最新日 K...")
             engine.sync_daily(symbols)
@@ -139,6 +164,9 @@ def main() -> None:
             TrendMaStrategy(engine=engine, settings=settings),
             BreakoutVolumeStrategy(engine=engine, settings=settings),
             MeanReversionStrategy(engine=engine, settings=settings),
+            RiskAdjustedMomentumStrategy(engine=engine, settings=settings),
+            VolumeConfirmedMomentumStrategy(engine=engine, settings=settings),
+            LowVolTrendRotationStrategy(engine=engine, settings=settings),
         ]
 
         notifier = FeishuNotifier(settings, engine=engine)

@@ -1,5 +1,6 @@
 """配置管理模块：通过 pydantic-settings 从环境变量或 .env 文件加载系统配置。"""
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,9 +27,27 @@ class Settings(BaseSettings):
     breakout_period: int = 60
     volume_surge: float = 1.5
 
+    # Mega7 风格轮动策略参数（日线交易日口径）
+    mega7_momentum_periods: str = "21,63,126"
+    mega7_volatility_days: int = 21
+    mega7_top_n: int = 10
+    mega7_downside_lookback_days: int = 63
+    mega7_downside_threshold: float = 0.5
+    mega7_volume_short_days: int = 21
+    mega7_volume_long_days: int = 63
+    mega7_volume_multiplier_floor: float = 0.5
+    mega7_volume_multiplier_cap: float = 2.0
+
     # 飞书推送
     feishu_webhook_url: str  # 必填字段，缺失时抛出 ValidationError
-    strategy_webhooks: dict[str, str] = {}
+    strategy_webhooks: dict[str, str] = Field(default_factory=dict)
+    feishu_timeout_seconds: float = 10.0
+    feishu_retry_attempts: int = 3
+    feishu_retry_backoff_seconds: float = 1.0
+
+    # 交易日保护：日常模式默认跳过周末和配置的 A 股休市日
+    skip_non_trading_day: bool = True
+    cn_market_holidays: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -1,6 +1,7 @@
 """飞书通知模块：将 ETF 选股结果通过 Webhook 推送至飞书群。"""
 
 import json
+import time
 from datetime import date
 
 import requests
@@ -114,27 +115,47 @@ class FeishuNotifier:
             webhook_key: 策略标识，用于路由到对应飞书机器人。
 
         Raises:
-            不抛出异常，HTTP 失败时记录 ERROR 日志。
+            HTTP 请求异常、非 JSON 响应或飞书错误码会记录日志，不向主流程抛出。
         """
         url = self.settings.get_webhook_url(webhook_key)
         payload = self._build_card(symbols, strategy_name)
+        attempts = max(1, int(self.settings.feishu_retry_attempts))
 
-        try:
-            resp = requests.post(
-                url,
-                data=json.dumps(payload),
-                headers={"Content-Type": "application/json"},
-                timeout=10,
-            )
-            resp_json = resp.json()
-
-            if resp.status_code != 200 or resp_json.get("code") != 0:
-                logger.error(
-                    f"飞书推送失败 [{webhook_key}] "
-                    f"HTTP状态={resp.status_code} 飞书响应={resp.text}"
+        for attempt in range(1, attempts + 1):
+            try:
+                resp = requests.post(
+                    url,
+                    data=json.dumps(payload),
+                    headers={"Content-Type": "application/json"},
+                    timeout=self.settings.feishu_timeout_seconds,
                 )
+            except requests.RequestException as exc:
+                retryable = True
+                message = f"飞书推送请求异常 [{webhook_key}]：{exc}"
             else:
-                logger.info(f"飞书推送成功 [{webhook_key}]，共 {len(symbols)} 只 ETF")
+                try:
+                    resp_json = resp.json()
+                except ValueError:
+                    retryable = resp.status_code == 200 or resp.status_code >= 500
+                    message = (
+                        f"飞书推送响应不是 JSON [{webhook_key}] "
+                        f"HTTP状态={resp.status_code} 响应={resp.text}"
+                    )
+                else:
+                    if resp.status_code == 200 and resp_json.get("code") == 0:
+                        logger.info(f"飞书推送成功 [{webhook_key}]，共 {len(symbols)} 只 ETF")
+                        return
+                    retryable = resp.status_code in (429,) or resp.status_code >= 500
+                    message = (
+                        f"飞书推送失败 [{webhook_key}] "
+                        f"HTTP状态={resp.status_code} 飞书响应={resp.text}"
+                    )
 
-        except requests.RequestException as exc:
-            logger.error(f"飞书推送请求异常 [{webhook_key}]：{exc}")
+            if not retryable or attempt == attempts:
+                logger.error(message)
+                return
+
+            logger.warning(f"{message}；准备第 {attempt + 1}/{attempts} 次重试")
+            backoff = self.settings.feishu_retry_backoff_seconds
+            if backoff > 0:
+                time.sleep(backoff * (2 ** (attempt - 1)))

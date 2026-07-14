@@ -10,7 +10,7 @@
 |------|------|
 | 标的范围 | tickflow `CN_ETF` 沪深 ETF（约 1500+ 只） |
 | 硬性过滤 | 上市满 60 个交易日；近 20 日平均成交额 ≥ 流动性阈值（默认 5000 万元） |
-| 核心信号 | 趋势（均线多头）、动量（横截面 RPS）、突破（放量新高）、回踩（强势回调） |
+| 核心信号 | 趋势（均线多头）、动量（横截面 RPS / 多周期风险调整）、突破（放量新高）、回踩（强势回调）、成交额确认、低波轮动 |
 | 排序 | 动量/趋势打分从高到低 |
 | 输出 | 每个策略推送候选 ETF；`--etf-report` 生成四梯队 Markdown 报告 |
 | 运行节奏 | 每交易日收盘后一次 |
@@ -84,6 +84,50 @@
 
 ---
 
+### 2.5 RiskAdjustedMomentum（Mega7 风格风险调整动量）— webhook `mega7_momentum`
+
+**思想**：借鉴 ETF + Mega 7 轮动模型的多周期动量与风险调整框架，在沪深 ETF 中寻找
+“上涨效率”更高的标的。
+
+**规则**（全部满足）：
+- 近 `MEGA7_MOMENTUM_PERIODS`（默认 21/63/126 日）的平均收益为正
+- 风险调整得分：`平均多周期收益 / MEGA7_VOLATILITY_DAYS 日波动率 × 成交额倍率` 为正
+- 近 `MEGA7_DOWNSIDE_LOOKBACK_DAYS` 日下跌日占比 ≤ `MEGA7_DOWNSIDE_THRESHOLD`
+- 通过流动性过滤
+
+**排序**：按风险调整得分从高到低，最多输出 `MEGA7_TOP_N` 只。
+
+---
+
+### 2.6 VolumeConfirmedMomentum（Mega7 风格成交额确认动量）— webhook `mega7_volume`
+
+**思想**：在多周期正动量基础上，要求短期成交额相对中期成交额放大，优先捕捉资金流入。
+
+**规则**（全部满足）：
+- 满足风险调整动量基础过滤
+- 短期成交额均值 / 长期成交额均值 > 1
+- 成交额倍率按 `MEGA7_VOLUME_MULTIPLIER_FLOOR/CAP` 截断，避免极端值主导排序
+
+**排序**：按成交额确认后的动量分从高到低。
+
+---
+
+### 2.7 LowVolTrendRotation（Mega7 风格低波趋势轮动）— webhook `mega7_lowvol`
+
+**思想**：借鉴“inverse volatility”加权偏好，不直接输出权重，而是在多头趋势中优先选择
+单位波动趋势强度更高的 ETF。
+
+**规则**（全部满足）：
+- `close > MA50 > MA200`
+- 近 60 日收益为正
+- 近 `MEGA7_DOWNSIDE_LOOKBACK_DAYS` 日下跌日占比 ≤ 阈值
+- `MEGA7_VOLATILITY_DAYS` 日波动率有效且大于 0
+- 通过流动性过滤
+
+**排序**：按 `(close / MA200 - 1) / 短期波动率 × (1 - 下行频率)` 从高到低。
+
+---
+
 ## 三、EtfPoolReport（四梯队综合报告）
 
 `--etf-report` 基于 `etf_metrics` 生成 Markdown 报告，把候选 ETF 分为四个梯队：
@@ -126,5 +170,13 @@
 | `RPS_THRESHOLD` | `90` | RPS 百分位阈值 |
 | `BREAKOUT_PERIOD` | `60` | 突破回看天数 |
 | `VOLUME_SURGE` | `1.5` | 放量倍数 |
+| `MEGA7_MOMENTUM_PERIODS` | `21,63,126` | Mega7 风格多周期动量窗口（日） |
+| `MEGA7_VOLATILITY_DAYS` | `21` | 风险调整波动率窗口（日） |
+| `MEGA7_TOP_N` | `10` | Mega7 风格策略最多输出数量 |
+| `MEGA7_DOWNSIDE_LOOKBACK_DAYS` | `63` | 下行频率观察窗口（日） |
+| `MEGA7_DOWNSIDE_THRESHOLD` | `0.5` | 最大允许下跌日占比 |
+| `MEGA7_VOLUME_SHORT_DAYS` | `21` | 短期成交额均值窗口（日） |
+| `MEGA7_VOLUME_LONG_DAYS` | `63` | 长期成交额均值窗口（日） |
+| `MEGA7_VOLUME_MULTIPLIER_FLOOR/CAP` | `0.5/2.0` | 成交额倍率截断范围 |
 
 > 免责声明：本文档与系统输出仅用于量化研究与学习，不构成任何投资建议。ETF 投资有风险，入市需谨慎。
