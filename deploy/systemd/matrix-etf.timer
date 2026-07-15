@@ -4,7 +4,6 @@ Description=Run Matrix ETF recommendation after A-share market close
 [Timer]
 OnCalendar=Mon..Fri 19:15:00
 Persistent=true
-RandomizedDelaySec=5m
 Unit=matrix-etf.service
 
 [Install]

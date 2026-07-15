@@ -186,7 +186,7 @@ sudo systemctl start matrix-etf.service
 sudo systemctl start matrix-stock.service
 ```
 
-跑通后就不用再管了：ETF 线每周一至周五 **19:15**、股票线 **19:40** 自动执行，
+跑通后就不用再管了：ETF 线每周一至周五 **19:15**、股票线 **20:30** 自动执行，
 错过（如关机）会在开机后由 `Persistent=true` 补跑。**只想启用其中一条线**时，
 跳过另一条的回填与 `enable` 即可（两条线完全独立）。
 
@@ -307,9 +307,9 @@ journalctl -u matrix-etf.service -n 100 --no-pager
 journalctl -u matrix-stock.service -n 100 --no-pager
 ```
 
-ETF 线默认在**周一至周五 19:15**、股票线在 **19:40**（收盘后，错开以分散数据源压力）运行，
-`Persistent=true` 会在错过时补跑。如需调整时间，编辑对应 `.timer` 的 `OnCalendar` 后
-`systemctl daemon-reload`。
+ETF 线默认在**周一至周五 19:15**、股票线在 **20:30**（收盘后，固定错开约 1 小时以彻底避免
+两条线重叠、互抢数据源限速额度）运行，`Persistent=true` 会在错过时补跑。如需调整时间，
+编辑对应 `.timer` 的 `OnCalendar` 后 `systemctl daemon-reload`。
 
 ### 7. 验证：手动跑一次并确认飞书收到推送
 

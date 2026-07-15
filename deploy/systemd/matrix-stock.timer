@@ -2,9 +2,8 @@
 Description=Run Matrix A-share stock recommendation after market close
 
 [Timer]
-OnCalendar=Mon..Fri 19:40:00
+OnCalendar=Mon..Fri 20:30:00
 Persistent=true
-RandomizedDelaySec=5m
 Unit=matrix-stock.service
 
 [Install]
