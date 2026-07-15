@@ -2,6 +2,22 @@
 
 > ETF + A 股推荐系统：tickflow 数据同步 + SQLite 本地存储 + 多策略选股 + 飞书推送。
 
+## 👋 想体验？扫码加入飞书群
+
+系统每天收盘后会把 ETF 与 A 股的策略选股结果自动推送到飞书群。**想直接体验推送效果，用飞书扫描下方二维码加入体验群即可：**
+
+<p align="center">
+  <img src="docs/assets/feishu-group-qr.png" alt="Matrix 体验群二维码" width="320" />
+</p>
+
+<p align="center">
+  <b>Matrix-体验群003</b><br/>
+  用飞书 App 扫一扫加入，即可实时收到每日 ETF / A 股策略推荐卡片。<br/>
+  <sub>二维码有效期至 2027/7/15；如已过期或无法加入，欢迎提 issue 联系。</sub>
+</p>
+
+---
+
 Matrix 面向阿里云 ECS / Alibaba Cloud Linux 部署。系统每天收盘后从
 [tickflow](https://github.com/tickflow-org/tickflow) 同步行情，运行内置技术型策略，
 并把候选标的推送到飞书群。**数据源完全使用 tickflow，不依赖 baostock。**
