@@ -195,6 +195,42 @@ def test_sync_basic_info_upserts_requested_symbols() -> None:
         assert engine.get_etf_names(["510300.SH"]) == {"510300.SH": "沪深300ETF"}
 
 
+def test_sync_universe_only_fetches_missing_basics() -> None:
+    """日常同步只应为 etf_basic 中缺失的新标的拉取基础信息，已有的跳过。"""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        engine, _ = make_engine_in(tmp_dir)
+        fetched: list[str] = []
+
+        class _Instruments:
+            @staticmethod
+            def get(symbol: str) -> dict:
+                fetched.append(symbol)
+                return {"symbol": symbol, "code": symbol.split(".")[0],
+                        "exchange": "SH", "name": f"名称{symbol}", "type": "etf",
+                        "ext": {}}
+
+        class _Universes:
+            @staticmethod
+            def get(_uid: str) -> dict:
+                return {"symbols": ["510300.SH", "159915.SZ"]}
+
+        class _Client:
+            instruments = _Instruments()
+            universes = _Universes()
+
+        with patch.object(engine, "_client", return_value=_Client()):
+            # 预置一只已存在的基础信息
+            engine.sync_basic_info(["510300.SH"])
+            fetched.clear()
+
+            returned = engine.sync_universe_and_get_symbols()
+
+        assert set(returned) == {"510300.SH", "159915.SZ"}
+        # 只应为缺失的新标的（159915.SZ）拉取，不再重拉 510300.SH
+        assert fetched == ["159915.SZ"]
+        assert "510300.SH" in engine.get_known_basic_symbols()
+
+
 def test_repair_latest_gaps_refetches_missing_symbol() -> None:
     """增量后缺最新交易日的 ETF 应被扩大窗口补拉一次。"""
     with tempfile.TemporaryDirectory() as tmp_dir:

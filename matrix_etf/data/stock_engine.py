@@ -299,10 +299,29 @@ class StockDataEngine:
         return self.sync_basic_info(self.get_universe_symbols())
 
     def sync_universe_and_get_symbols(self) -> list[str]:
-        """同步股票标的池基础信息，并返回本次标的池 symbols。"""
+        """同步股票标的池基础信息，并返回本次标的池 symbols。
+
+        为避免每次日常运行都逐只重拉基础信息（免费服务限速 60/min，5528 只全量重拉
+        会耗时约 1.5 小时且毫无必要），这里只对 ``stock_basic`` 中尚不存在的**新标的**
+        拉取基础信息；已有标的直接跳过。首次回填后，日常增量几乎不会再触发限速。
+        """
         symbols = self.get_universe_symbols()
-        self.sync_basic_info(symbols)
+        known = self.get_known_basic_symbols()
+        missing = [s for s in symbols if s not in known]
+        if missing:
+            logger.info(
+                f"检测到 {len(missing)} 只新股票（本地缺基础信息），仅为其同步基础信息"
+            )
+            self.sync_basic_info(missing)
+        else:
+            logger.info("股票基础信息已齐全，跳过基础信息同步")
         return symbols
+
+    def get_known_basic_symbols(self) -> set[str]:
+        """返回 stock_basic 中已存在基础信息的 symbol 集合。"""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute("SELECT symbol FROM stock_basic").fetchall()
+        return {row[0] for row in rows}
 
     def get_names(self, symbols: list[str]) -> dict[str, str]:
         """从 stock_basic 返回 {symbol: name} 映射（缺失时回退为 symbol）。"""
