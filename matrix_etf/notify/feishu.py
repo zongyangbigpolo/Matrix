@@ -44,6 +44,16 @@ class FeishuNotifier:
             return f"BJ{symbol}"
         return f"SZ{symbol}"
 
+    @staticmethod
+    def build_stale_warning(reason: str | None) -> str:
+        """根据数据更新失败原因构造卡片顶部提示文案（含日期，原因过长时截断）。"""
+        today = date.today().strftime("%Y-%m-%d")
+        short = " ".join(str(reason or "").split())
+        if len(short) > 120:
+            short = short[:120] + "…"
+        tail = f"（原因：{short}）" if short else ""
+        return f"{today} 数据更新失败，以下为基于本地历史数据的结果{tail}"
+
     def _get_names(self, symbols: list[str]) -> dict[str, str]:
         """返回 {symbol: name} 映射，优先使用数据引擎（stock_basic / etf_basic）。"""
         if self.engine is not None:
@@ -62,6 +72,7 @@ class FeishuNotifier:
         symbols: list[str],
         strategy_name: str,
         category: str = "ETF",
+        stale_warning: str | None = None,
     ) -> dict:
         today = date.today().strftime("%Y-%m-%d")
         names = self._get_names(symbols)
@@ -75,6 +86,39 @@ class FeishuNotifier:
 
         symbol_text = " ".join(links) if links else "（无选股结果）"
 
+        elements: list[dict] = []
+        if stale_warning:
+            elements.append(
+                {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": f"⚠️ **{stale_warning}**"},
+                }
+            )
+            elements.append({"tag": "hr"})
+        elements.extend(
+            [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": (
+                            f"**日期：** {today}\n"
+                            f"**策略：** {strategy_name}\n"
+                            f"**候选数量：** {len(symbols)}"
+                        ),
+                    },
+                },
+                {"tag": "hr"},
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"**候选{noun}：**\n{symbol_text}",
+                    },
+                },
+            ]
+        )
+
         return {
             "msg_type": "interactive",
             "card": {
@@ -83,29 +127,10 @@ class FeishuNotifier:
                         "tag": "plain_text",
                         "content": f"Matrix {category} Signals | {strategy_name}",
                     },
-                    "template": "turquoise",
+                    # 数据更新失败时用红色标题，突出提醒
+                    "template": "red" if stale_warning else "turquoise",
                 },
-                "elements": [
-                    {
-                        "tag": "div",
-                        "text": {
-                            "tag": "lark_md",
-                            "content": (
-                                f"**日期：** {today}\n"
-                                f"**策略：** {strategy_name}\n"
-                                f"**候选数量：** {len(symbols)}"
-                            ),
-                        },
-                    },
-                    {"tag": "hr"},
-                    {
-                        "tag": "div",
-                        "text": {
-                            "tag": "lark_md",
-                            "content": f"**候选{noun}：**\n{symbol_text}",
-                        },
-                    },
-                ],
+                "elements": elements,
             },
         }
 
@@ -115,6 +140,7 @@ class FeishuNotifier:
         strategy_name: str,
         webhook_key: str = "default",
         category: str = "ETF",
+        stale_warning: str | None = None,
     ) -> None:
         """
         将选股结果格式化为飞书卡片消息并 POST 至对应 Webhook。
@@ -127,12 +153,14 @@ class FeishuNotifier:
             strategy_name: 策略名称，用于卡片标题。
             webhook_key: 策略标识，用于路由到对应飞书机器人。
             category: 产品类别（如 'ETF'、'Stock'），用于卡片标题与文案。
+            stale_warning: 数据更新失败时的提示文案；非空时卡片顶部会显示醒目
+                的红色警示，表明本次结果基于本地历史数据而非最新行情。
 
         Raises:
             HTTP 请求异常、非 JSON 响应或飞书错误码会记录日志，不向主流程抛出。
         """
         url = self.settings.get_webhook_url(webhook_key)
-        payload = self._build_card(symbols, strategy_name, category)
+        payload = self._build_card(symbols, strategy_name, category, stale_warning)
         attempts = max(1, int(self.settings.feishu_retry_attempts))
 
         for attempt in range(1, attempts + 1):

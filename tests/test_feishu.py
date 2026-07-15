@@ -119,6 +119,40 @@ def test_stock_category_card_uses_stock_labels() -> None:
     assert "候选个股" in text
 
 
+def test_stale_warning_card_shows_red_banner() -> None:
+    """带 stale_warning 时卡片应显示醒目警示并使用红色标题。"""
+    settings = make_settings()
+    notifier = FeishuNotifier(settings)
+    warning = FeishuNotifier.build_stale_warning("网络超时")
+    card = notifier._build_card(
+        ["510300.SH"], "RpsMomentumStrategy", stale_warning=warning
+    )
+
+    assert card["card"]["header"]["template"] == "red"
+    text = json.dumps(card, ensure_ascii=False)
+    assert "数据更新失败" in text
+    assert "网络超时" in text
+    # 首个元素应为警示条
+    assert "⚠️" in card["card"]["elements"][0]["text"]["content"]
+
+
+def test_build_stale_warning_truncates_long_reason() -> None:
+    """更新失败原因过长时应截断，避免卡片过长。"""
+    warning = FeishuNotifier.build_stale_warning("x" * 500)
+    assert "数据更新失败" in warning
+    assert "…" in warning
+    assert len(warning) < 200
+
+
+def test_normal_card_uses_turquoise_and_no_warning() -> None:
+    """未传 stale_warning 时卡片应保持青色标题且不含警示条。"""
+    settings = make_settings()
+    notifier = FeishuNotifier(settings)
+    card = notifier._build_card(["510300.SH"], "RpsMomentumStrategy")
+    assert card["card"]["header"]["template"] == "turquoise"
+    assert "数据更新失败" not in json.dumps(card, ensure_ascii=False)
+
+
 def test_retry_on_request_exception_then_success() -> None:
     """网络异常应按配置重试，后续成功则停止重试。"""
     settings = make_settings(feishu_retry_backoff_seconds=0.0)

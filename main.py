@@ -142,11 +142,27 @@ def main() -> None:
                 logger.info(f"今日为非交易日（{reason}），跳过日常同步；如需运行请加 --force")
                 return
 
+        data_stale = False
+        stale_reason = ""
+
         if requested_symbols:
-            engine.sync_basic_info(requested_symbols)
             symbols = requested_symbols
+            try:
+                engine.sync_basic_info(requested_symbols)
+            except Exception as exc:  # noqa: BLE001
+                data_stale = True
+                stale_reason = str(exc)
+                logger.warning(f"基础信息同步失败，将使用本地已有数据继续：{exc}")
         else:
-            symbols = engine.sync_universe_and_get_symbols()
+            try:
+                symbols = engine.sync_universe_and_get_symbols()
+            except Exception as exc:  # noqa: BLE001
+                data_stale = True
+                stale_reason = str(exc)
+                symbols = engine.get_local_symbols()
+                logger.warning(
+                    f"标的池/基础信息同步失败，改用本地已有 {len(symbols)} 只 ETF 继续：{exc}"
+                )
 
         local_symbols = set(engine.get_local_symbols())
         has_local_data = any(symbol in local_symbols for symbol in symbols)
@@ -156,8 +172,19 @@ def main() -> None:
             engine.refresh_metrics(symbols)
         else:
             logger.info("开始增量同步最新日 K...")
-            engine.sync_daily(symbols)
+            try:
+                engine.sync_daily(symbols)
+            except Exception as exc:  # noqa: BLE001
+                data_stale = True
+                stale_reason = str(exc)
+                logger.warning(
+                    f"增量同步最新日 K 失败，将基于本地已有历史数据跑策略：{exc}"
+                )
             engine.refresh_metrics(symbols)
+
+        stale_warning = (
+            FeishuNotifier.build_stale_warning(stale_reason) if data_stale else None
+        )
 
         strategies: list[BaseStrategy] = [
             RpsMomentumStrategy(engine=engine, settings=settings),
@@ -183,6 +210,7 @@ def main() -> None:
                     symbols=selected,
                     strategy_name=strategy_name,
                     webhook_key=strategy.webhook_key,
+                    stale_warning=stale_warning,
                 )
             else:
                 logger.info(f"{strategy_name} 无选股结果，跳过推送")
