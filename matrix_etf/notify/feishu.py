@@ -8,6 +8,7 @@ import requests
 
 from matrix_etf.core.config import Settings
 from matrix_etf.core.logger import get_logger
+from matrix_etf.strategy.names import get_strategy_display_name
 
 logger = get_logger(__name__)
 
@@ -77,6 +78,7 @@ class FeishuNotifier:
         today = date.today().strftime("%Y-%m-%d")
         names = self._get_names(symbols)
         noun = "个股" if category.lower() in ("stock", "个股", "股票") else category
+        display_name = get_strategy_display_name(strategy_name)
 
         links: list[str] = []
         for symbol in symbols:
@@ -103,7 +105,7 @@ class FeishuNotifier:
                         "tag": "lark_md",
                         "content": (
                             f"**日期：** {today}\n"
-                            f"**策略：** {strategy_name}\n"
+                            f"**策略：** {display_name}\n"
                             f"**候选数量：** {len(symbols)}"
                         ),
                     },
@@ -125,7 +127,7 @@ class FeishuNotifier:
                 "header": {
                     "title": {
                         "tag": "plain_text",
-                        "content": f"Matrix {category} Signals | {strategy_name}",
+                        "content": f"Matrix {category} Signals | {display_name}",
                     },
                     # 数据更新失败时用红色标题，突出提醒
                     "template": "red" if stale_warning else "turquoise",

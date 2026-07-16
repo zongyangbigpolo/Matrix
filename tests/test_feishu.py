@@ -110,13 +110,33 @@ def test_xueqiu_code_mapping() -> None:
 
 
 def test_stock_category_card_uses_stock_labels() -> None:
-    """category='Stock' 时卡片标题与文案应体现「个股」。"""
+    """category='Stock' 时卡片标题应体现「个股」并显示中文策略名。"""
     settings = make_settings()
     notifier = FeishuNotifier(settings)
     card = notifier._build_card(["600519.SH"], "TurtleTradeStrategy", category="Stock")
     text = json.dumps(card, ensure_ascii=False)
-    assert "Matrix Stock Signals | TurtleTradeStrategy" in text
+    # 标题使用中文策略名（海龟突破），而非英文类名
+    assert "Matrix Stock Signals | 海龟突破" in text
+    assert "TurtleTradeStrategy" not in text
     assert "候选个股" in text
+
+
+def test_card_title_uses_chinese_strategy_name() -> None:
+    """ETF 卡片标题与正文的策略名应翻译为中文。"""
+    settings = make_settings()
+    notifier = FeishuNotifier(settings)
+    card = notifier._build_card(["510300.SH"], "RpsMomentumStrategy")
+    text = json.dumps(card, ensure_ascii=False)
+    assert "相对强度动量" in text
+    assert "RpsMomentumStrategy" not in text
+
+
+def test_unknown_strategy_name_falls_back_to_original() -> None:
+    """未登记的策略类名应原样展示，不报错。"""
+    settings = make_settings()
+    notifier = FeishuNotifier(settings)
+    card = notifier._build_card(["510300.SH"], "SomeUnknownStrategy")
+    assert "SomeUnknownStrategy" in json.dumps(card, ensure_ascii=False)
 
 
 def test_stale_warning_card_shows_red_banner() -> None:
