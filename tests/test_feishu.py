@@ -115,8 +115,8 @@ def test_stock_category_card_uses_stock_labels() -> None:
     notifier = FeishuNotifier(settings)
     card = notifier._build_card(["600519.SH"], "TurtleTradeStrategy", category="Stock")
     text = json.dumps(card, ensure_ascii=False)
-    # 标题使用中文策略名（海龟突破），而非英文类名
-    assert "Matrix Stock Signals | 海龟突破" in text
+    # 标题除 Matrix 外均为中文（个股信号 + 中文策略名），而非英文类名
+    assert "Matrix 个股信号 | 海龟突破" in text
     assert "TurtleTradeStrategy" not in text
     assert "候选个股" in text
 
@@ -127,6 +127,7 @@ def test_card_title_uses_chinese_strategy_name() -> None:
     notifier = FeishuNotifier(settings)
     card = notifier._build_card(["510300.SH"], "RpsMomentumStrategy")
     text = json.dumps(card, ensure_ascii=False)
+    assert "Matrix ETF信号 | 相对强度动量" in text
     assert "相对强度动量" in text
     assert "RpsMomentumStrategy" not in text
 

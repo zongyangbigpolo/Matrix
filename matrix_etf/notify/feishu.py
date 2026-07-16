@@ -127,7 +127,7 @@ class FeishuNotifier:
                 "header": {
                     "title": {
                         "tag": "plain_text",
-                        "content": f"Matrix {category} Signals | {display_name}",
+                        "content": f"Matrix {noun}信号 | {display_name}",
                     },
                     # 数据更新失败时用红色标题，突出提醒
                     "template": "red" if stale_warning else "turquoise",
