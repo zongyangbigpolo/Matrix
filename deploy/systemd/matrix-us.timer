@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Matrix US stock recommendation in the evening
+
+[Timer]
+# 与 ETF（19:15）、A 股（20:30）错开；美股免费档为历史数据，取上一美股收盘日即可。
+OnCalendar=Mon..Fri 21:45:00
+Persistent=true
+Unit=matrix-us.service
+
+[Install]
+WantedBy=timers.target

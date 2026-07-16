@@ -1,0 +1,12 @@
+[Unit]
+Description=Matrix daily US stock recommendation
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/Matrix
+EnvironmentFile=-/opt/Matrix/.env
+ExecStart=/opt/Matrix/scripts/run_us.sh
+TimeoutStartSec=6h
+Nice=10

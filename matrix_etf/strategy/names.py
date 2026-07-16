@@ -24,6 +24,11 @@ STRATEGY_DISPLAY_NAMES: dict[str, str] = {
     "LimitUpShakeoutStrategy": "涨停洗盘",
     "UptrendLimitDownStrategy": "上升趋势跌停",
     "RpsBreakoutStrategy": "RPS动量突破",
+    # ── 美股策略 ──
+    "UsRpsMomentumStrategy": "美股相对强度动量",
+    "UsTrendMaStrategy": "美股均线趋势",
+    "UsMaVolumeStrategy": "美股均线放量",
+    "UsBreakoutVolumeStrategy": "美股放量突破",
 }
 
 

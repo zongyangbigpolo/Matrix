@@ -107,6 +107,21 @@ def test_xueqiu_code_mapping() -> None:
     assert FeishuNotifier._to_xueqiu_code("600519") == "SH600519"
     assert FeishuNotifier._to_xueqiu_code("000001") == "SZ000001"
     assert FeishuNotifier._to_xueqiu_code("830799") == "BJ830799"
+    # 美股：雪球直接用 ticker，无市场前缀（含带点的多类别股，如 BRK.B）
+    assert FeishuNotifier._to_xueqiu_code("AAPL.US") == "AAPL"
+    assert FeishuNotifier._to_xueqiu_code("BRK.B.US") == "BRK.B"
+
+
+def test_us_category_card_uses_us_labels() -> None:
+    """category='US' 时卡片标题应体现「美股」并显示中文策略名，链接用纯 ticker。"""
+    settings = make_settings()
+    notifier = FeishuNotifier(settings)
+    card = notifier._build_card(["AAPL.US"], "UsRpsMomentumStrategy", category="US")
+    text = json.dumps(card, ensure_ascii=False)
+    assert "Matrix 美股信号 | 美股相对强度动量" in text
+    assert "UsRpsMomentumStrategy" not in text
+    assert "候选美股" in text
+    assert "https://xueqiu.com/S/AAPL" in text
 
 
 def test_stock_category_card_uses_stock_labels() -> None:

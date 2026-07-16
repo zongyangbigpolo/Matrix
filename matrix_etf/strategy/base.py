@@ -10,6 +10,7 @@ from matrix_etf.core.config import Settings
 if TYPE_CHECKING:
     from matrix_etf.data.engine import DataEngine
     from matrix_etf.data.stock_engine import StockDataEngine
+    from matrix_etf.data.us_stock_engine import UsStockDataEngine
 
 
 class BaseStrategy(ABC):
@@ -29,7 +30,7 @@ class BaseStrategy(ABC):
 
     def __init__(
         self,
-        engine: "DataEngine | StockDataEngine",
+        engine: "DataEngine | StockDataEngine | UsStockDataEngine",
         settings: Settings,
     ) -> None:
         """
@@ -48,6 +49,22 @@ class BaseStrategy(ABC):
             return False
         avg_amount = amount.tail(20).mean()
         return bool(avg_amount >= self.settings.liquidity_min_amount)
+
+    @staticmethod
+    def _passes_dollar_volume(
+        close: pd.Series,
+        volume: pd.Series,
+        min_dollar_volume: float,
+    ) -> bool:
+        """近 20 日平均美元成交额（close×volume）是否达标（美股策略使用）。
+
+        免费档美股不提供成交额（``amount`` 恒为 0），故用 ``close × volume``
+        估算美元成交额作为流动性代理。
+        """
+        if len(close) < 20 or len(volume) < 20:
+            return False
+        dollar_volume = (close.tail(20) * volume.tail(20)).mean()
+        return bool(dollar_volume >= min_dollar_volume)
 
     @abstractmethod
     def run(self) -> list[str]:

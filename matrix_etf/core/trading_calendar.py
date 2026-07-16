@@ -1,7 +1,7 @@
-"""A 股交易日保护工具。
+"""交易日保护工具。
 
-不引入额外交易日历依赖；默认过滤周末，并允许通过 ``CN_MARKET_HOLIDAYS``
-配置逗号分隔的休市日（YYYY-MM-DD）。
+不引入额外交易日历依赖；默认过滤周末，并允许通过 ``CN_MARKET_HOLIDAYS`` /
+``US_MARKET_HOLIDAYS`` 配置逗号分隔的休市日（YYYY-MM-DD）。
 """
 
 from datetime import date
@@ -26,3 +26,16 @@ def get_non_trading_day_reason(day: date, settings: Settings) -> str | None:
 def is_cn_trading_day(day: date, settings: Settings) -> bool:
     """判断给定日期是否可作为 A 股日常同步交易日。"""
     return get_non_trading_day_reason(day, settings) is None
+
+
+def get_us_non_trading_day_reason(day: date, settings: Settings) -> str | None:
+    """返回美股非交易日原因；交易日返回 None。
+
+    仅按周末与 ``US_MARKET_HOLIDAYS`` 配置过滤。免费档美股数据为历史数据，
+    日常运行在北京时间晚间取到的是上一个已收盘的美股交易日，不影响策略。
+    """
+    if day.weekday() >= 5:
+        return "周末"
+    if day.isoformat() in parse_holidays(settings.us_market_holidays):
+        return "配置的美股休市日"
+    return None

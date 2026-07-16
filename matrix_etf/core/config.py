@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     stock_db_path: str = "data/matrix_stock.db"
     stock_universe: str = "CN_Equity_A"
 
+    # 美股数据源与存储（与 ETF / A 股完全解耦：独立数据库文件与标的池）
+    us_db_path: str = "data/matrix_us.db"
+    us_universe: str = "US_Equity"
+    us_start_date: str = "2020-01-01"
+
     # 策略参数
     liquidity_min_amount: float = 50_000_000.0
     rps_period: int = 120
@@ -36,6 +41,15 @@ class Settings(BaseSettings):
     stock_ma_volume_surge: float = 1.5
     stock_rps_period: int = 120
     stock_rps_threshold: float = 90.0
+
+    # 美股策略参数（日线交易日口径）
+    # 免费档美股不提供成交额（amount 恒为 0），流动性改用「美元成交额 = close × volume」估算。
+    us_liquidity_min_dollar_volume: float = 20_000_000.0
+    us_ma_volume_surge: float = 1.5
+    us_rps_period: int = 120
+    us_rps_threshold: float = 90.0
+    us_breakout_period: int = 60
+    us_volume_surge: float = 1.5
 
     # Mega7 风格轮动策略参数（日线交易日口径）
     mega7_momentum_periods: str = "21,63,126"
@@ -58,6 +72,8 @@ class Settings(BaseSettings):
     # 交易日保护：日常模式默认跳过周末和配置的 A 股休市日
     skip_non_trading_day: bool = True
     cn_market_holidays: str = ""
+    # 美股休市日（YYYY-MM-DD，逗号分隔）；未配置时仅按周末过滤
+    us_market_holidays: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",

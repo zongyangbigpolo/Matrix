@@ -11,6 +11,7 @@ from matrix_etf.strategy.names import (
 STRATEGY_DIRS = [
     Path(__file__).resolve().parent.parent / "matrix_etf/strategy/etf",
     Path(__file__).resolve().parent.parent / "matrix_etf/strategy/stock",
+    Path(__file__).resolve().parent.parent / "matrix_etf/strategy/us",
 ]
 
 

@@ -34,9 +34,15 @@ class FeishuNotifier:
 
     @staticmethod
     def _to_xueqiu_code(symbol: str) -> str:
-        """将 tickflow symbol（如 510300.SH / 600519.SH）转为雪球格式（SH510300）。"""
+        """将 tickflow symbol 转为雪球格式。
+
+        - A 股 / ETF：``510300.SH`` → ``SH510300``。
+        - 美股：``AAPL.US`` → ``AAPL``（雪球美股直接用 ticker，无市场前缀）。
+        """
         if "." in symbol:
-            code, suffix = symbol.split(".", 1)
+            code, suffix = symbol.rsplit(".", 1)
+            if suffix.upper() == "US":
+                return code.upper()
             return f"{suffix.upper()}{code}"
         # 无后缀时按 A 股代码规则推断
         if symbol.startswith("5") or symbol.startswith("6"):
@@ -44,6 +50,20 @@ class FeishuNotifier:
         if symbol.startswith("4") or symbol.startswith("8"):
             return f"BJ{symbol}"
         return f"SZ{symbol}"
+
+    @staticmethod
+    def _category_noun(category: str) -> str:
+        """将产品类别映射为卡片标题/正文使用的中文名词。
+
+        - ``ETF`` 保留通用缩写；``Stock`` → 个股；``US`` → 美股。
+        - 传入已是中文（如 ``个股``/``美股``）时原样返回。
+        """
+        key = category.lower()
+        if key in ("stock", "个股", "股票"):
+            return "个股"
+        if key in ("us", "美股", "us_stock", "us_equity"):
+            return "美股"
+        return category
 
     @staticmethod
     def build_stale_warning(reason: str | None) -> str:
@@ -77,7 +97,7 @@ class FeishuNotifier:
     ) -> dict:
         today = date.today().strftime("%Y-%m-%d")
         names = self._get_names(symbols)
-        noun = "个股" if category.lower() in ("stock", "个股", "股票") else category
+        noun = self._category_noun(category)
         display_name = get_strategy_display_name(strategy_name)
 
         links: list[str] = []
