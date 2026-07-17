@@ -9,7 +9,7 @@ from hypothesis import strategies as st
 
 import main as main_module
 from matrix_etf.core.config import Settings
-from matrix_etf.notify.feishu import FeishuNotifier as _RealNotifier
+from matrix_etf.data.sync_runner import SyncOutcome
 
 
 @given(error_msg=st.text(min_size=1, max_size=100))
@@ -32,31 +32,39 @@ def test_parse_symbols() -> None:
     ]
 
 
-def test_main_degrades_and_flags_stale_on_sync_failure(monkeypatch) -> None:
-    """日 K 增量同步失败时应基于本地数据继续跑策略，并在推送时携带更新失败提示。"""
-    settings = Settings(
+def _make_settings() -> Settings:
+    return Settings(
         db_path="data/test.db",
         start_date="2020-01-01",
         feishu_webhook_url="https://example.com/hook",
     )
+
+
+def test_main_sends_alert_and_skips_strategies_on_sync_failure(monkeypatch) -> None:
+    """持续拉取失败时应发送告警卡片并跳过全部策略推送。"""
+    settings = _make_settings()
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
 
     fake_engine = MagicMock()
-    fake_engine.sync_universe_and_get_symbols.side_effect = RuntimeError("universe boom")
+    fake_engine.sync_universe_and_get_symbols.return_value = ["510300.SH"]
     fake_engine.get_local_symbols.return_value = ["510300.SH"]
-    fake_engine.sync_daily.side_effect = RuntimeError("kline boom")
     monkeypatch.setattr(main_module, "DataEngine", lambda *a, **k: fake_engine)
 
-    captured: list[dict] = []
+    failed = SyncOutcome(False, 0, 1, "2026-07-15", 3, 9000.0, "timeout")
+    monkeypatch.setattr(main_module, "sync_until_stable", lambda *a, **k: failed)
+
+    sent: list[dict] = []
+    alerts: list[dict] = []
 
     class _FakeNotifier:
-        build_stale_warning = staticmethod(_RealNotifier.build_stale_warning)
-
         def __init__(self, *a, **k) -> None:
             pass
 
         def send(self, **kwargs) -> None:
-            captured.append(kwargs)
+            sent.append(kwargs)
+
+        def send_alert(self, **kwargs) -> None:
+            alerts.append(kwargs)
 
     monkeypatch.setattr(main_module, "FeishuNotifier", _FakeNotifier)
 
@@ -77,5 +85,57 @@ def test_main_degrades_and_flags_stale_on_sync_failure(monkeypatch) -> None:
     monkeypatch.setattr("sys.argv", ["main.py", "--force"])
     main_module.main()
 
-    assert captured, "更新失败也应基于本地数据继续推送"
-    assert all(c["stale_warning"] and "数据更新失败" in c["stale_warning"] for c in captured)
+    assert len(alerts) == 1, "失败应发送一张告警卡片"
+    assert alerts[0]["category"] == "ETF"
+    assert not sent, "失败时不应推送任何策略卡片"
+    fake_strategy.run.assert_not_called()
+
+
+def test_main_runs_strategies_on_sync_success(monkeypatch) -> None:
+    """持续拉取成功时应正常跑策略并推送（不带 stale_warning）。"""
+    settings = _make_settings()
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+
+    fake_engine = MagicMock()
+    fake_engine.sync_universe_and_get_symbols.return_value = ["510300.SH"]
+    fake_engine.get_local_symbols.return_value = ["510300.SH"]
+    monkeypatch.setattr(main_module, "DataEngine", lambda *a, **k: fake_engine)
+
+    ok = SyncOutcome(True, 1, 1, "2026-07-16", 1, 1.0, "covered")
+    monkeypatch.setattr(main_module, "sync_until_stable", lambda *a, **k: ok)
+
+    sent: list[dict] = []
+    alerts: list[dict] = []
+
+    class _FakeNotifier:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        def send(self, **kwargs) -> None:
+            sent.append(kwargs)
+
+        def send_alert(self, **kwargs) -> None:
+            alerts.append(kwargs)
+
+    monkeypatch.setattr(main_module, "FeishuNotifier", _FakeNotifier)
+
+    fake_strategy = MagicMock()
+    fake_strategy.run.return_value = ["510300.SH"]
+    fake_strategy.webhook_key = "default"
+    for name in (
+        "RpsMomentumStrategy",
+        "TrendMaStrategy",
+        "BreakoutVolumeStrategy",
+        "MeanReversionStrategy",
+        "RiskAdjustedMomentumStrategy",
+        "VolumeConfirmedMomentumStrategy",
+        "LowVolTrendRotationStrategy",
+    ):
+        monkeypatch.setattr(main_module, name, lambda *a, **k: fake_strategy)
+
+    monkeypatch.setattr("sys.argv", ["main.py", "--force"])
+    main_module.main()
+
+    assert not alerts, "成功时不应发送告警卡片"
+    assert sent, "成功时应推送策略卡片"
+    assert all("stale_warning" not in c for c in sent)

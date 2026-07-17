@@ -28,6 +28,7 @@ from matrix_etf.core.config import get_settings  # noqa: E402
 from matrix_etf.core.logger import get_logger  # noqa: E402
 from matrix_etf.core.trading_calendar import get_non_trading_day_reason  # noqa: E402
 from matrix_etf.data.engine import DataEngine  # noqa: E402
+from matrix_etf.data.sync_runner import sync_until_stable  # noqa: E402
 from matrix_etf.notify.feishu import FeishuNotifier  # noqa: E402
 from matrix_etf.strategy.base import BaseStrategy  # noqa: E402
 from matrix_etf.strategy.etf.breakout_volume import BreakoutVolumeStrategy  # noqa: E402
@@ -142,27 +143,22 @@ def main() -> None:
                 logger.info(f"今日为非交易日（{reason}），跳过日常同步；如需运行请加 --force")
                 return
 
-        data_stale = False
-        stale_reason = ""
-
         if requested_symbols:
             symbols = requested_symbols
             try:
                 engine.sync_basic_info(requested_symbols)
             except Exception as exc:  # noqa: BLE001
-                data_stale = True
-                stale_reason = str(exc)
                 logger.warning(f"基础信息同步失败，将使用本地已有数据继续：{exc}")
         else:
             try:
                 symbols = engine.sync_universe_and_get_symbols()
             except Exception as exc:  # noqa: BLE001
-                data_stale = True
-                stale_reason = str(exc)
                 symbols = engine.get_local_symbols()
                 logger.warning(
                     f"标的池/基础信息同步失败，改用本地已有 {len(symbols)} 只 ETF 继续：{exc}"
                 )
+
+        notifier = FeishuNotifier(settings, engine=engine)
 
         local_symbols = set(engine.get_local_symbols())
         has_local_data = any(symbol in local_symbols for symbol in symbols)
@@ -171,20 +167,29 @@ def main() -> None:
             engine.backfill(symbols)
             engine.refresh_metrics(symbols)
         else:
-            logger.info("开始增量同步最新日 K...")
-            try:
-                engine.sync_daily(symbols)
-            except Exception as exc:  # noqa: BLE001
-                data_stale = True
-                stale_reason = str(exc)
-                logger.warning(
-                    f"增量同步最新日 K 失败，将基于本地已有历史数据跑策略：{exc}"
+            logger.info("开始持续同步最新日 K，直到拉全或达标...")
+            outcome = sync_until_stable(
+                engine,
+                symbols,
+                expected_latest_date=date.today().isoformat(),
+                max_seconds=settings.sync_persist_max_seconds,
+                round_interval=settings.sync_persist_round_interval,
+                target_coverage=settings.sync_persist_target_coverage,
+                min_coverage=settings.sync_persist_min_coverage,
+                log=logger,
+            )
+            if not outcome.success:
+                notifier.send_alert(
+                    message=(
+                        f"⚠️ {date.today():%Y-%m-%d} ETF 数据经持续重试后仍未拉全："
+                        f"{outcome.describe()}。本次跳过策略推送，可能为数据源限流/网络"
+                        "异常，请排查后手动重跑 `python main.py --force`。"
+                    ),
+                    category="ETF",
                 )
+                logger.warning("数据持续拉取失败，已发送告警卡片并跳过 ETF 策略推送")
+                return
             engine.refresh_metrics(symbols)
-
-        stale_warning = (
-            FeishuNotifier.build_stale_warning(stale_reason) if data_stale else None
-        )
 
         strategies: list[BaseStrategy] = [
             RpsMomentumStrategy(engine=engine, settings=settings),
@@ -195,8 +200,6 @@ def main() -> None:
             VolumeConfirmedMomentumStrategy(engine=engine, settings=settings),
             LowVolTrendRotationStrategy(engine=engine, settings=settings),
         ]
-
-        notifier = FeishuNotifier(settings, engine=engine)
 
         for strategy in strategies:
             strategy_name = type(strategy).__name__
@@ -210,7 +213,6 @@ def main() -> None:
                     symbols=selected,
                     strategy_name=strategy_name,
                     webhook_key=strategy.webhook_key,
-                    stale_warning=stale_warning,
                 )
             else:
                 logger.info(f"{strategy_name} 无选股结果，跳过推送")

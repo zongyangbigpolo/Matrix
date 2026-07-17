@@ -1,9 +1,10 @@
 [Unit]
-Description=Run Matrix US stock recommendation in the evening
+Description=Run Matrix US stock recommendation during China daytime
 
 [Timer]
-# 与 ETF（19:15）、A 股（20:30）错开；美股免费档为历史数据，取上一美股收盘日即可。
-OnCalendar=Mon..Fri 21:45:00
+# 美股白天（中国时区）拉取：此时上一美股交易日已完整收盘，且与晚间 A 股/ETF
+# 拉取窗口彻底错开，避免共享 tickflow 免费档 60/min 限额时相互抢占。
+OnCalendar=Mon..Fri 14:00:00
 Persistent=true
 Unit=matrix-us.service
 

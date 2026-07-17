@@ -172,6 +172,10 @@ python main.py --backfill
 | `SYNC_RETRY_ATTEMPTS` | 否 | `6` | 数据同步遇 tickflow 限流（60/min）时的最大尝试次数 |
 | `SYNC_RETRY_BASE_DELAY` | 否 | `2` | 同步重试的指数退避基准秒数 |
 | `SYNC_RETRY_MAX_DELAY` | 否 | `60` | 同步重试单次等待上限秒数 |
+| `SYNC_PERSIST_MAX_SECONDS` | 否 | `10800` | 「持续拉取直至完成」最长坚持时长（默认 3 小时） |
+| `SYNC_PERSIST_ROUND_INTERVAL` | 否 | `300` | 每轮补拉之间的间隔秒数（默认 5 分钟） |
+| `SYNC_PERSIST_TARGET_COVERAGE` | 否 | `0.9` | 最新交易日覆盖率达此比例即视为拉取完成 |
+| `SYNC_PERSIST_MIN_COVERAGE` | 否 | `0.5` | 覆盖率收敛/超时后仍可接受的最低下限 |
 | `STRATEGY_WEBHOOK_<KEY>` | 否 | — | 策略专属 webhook，KEY 见下表 |
 
 ETF 策略与 webhook_key 对应关系：
@@ -247,8 +251,12 @@ sudo systemctl start matrix-stock.service
 sudo systemctl start matrix-us.service
 ```
 
-跑通后就不用再管了：ETF 线每周一至周五 **19:15**、A 股线 **20:30**、美股线 **21:45**
-自动执行（三线错开，互不阻塞），错过（如关机）会在开机后由 `Persistent=true` 补跑。
+跑通后就不用再管了：ETF 线每周一至周五 **19:15**、A 股线 **20:30**（晚间错开），
+美股线放到**白天 14:00**（中国时区，此时上一美股交易日已完整收盘，且与晚间 A 股/ETF
+彻底错开，避免共享 tickflow 免费档 60/min 限额时相互抢占）。三线自动执行、互不阻塞，
+错过（如关机）会在开机后由 `Persistent=true` 补跑。收盘后每条线会**持续补拉**当日数据，
+直到拉全或覆盖率达标才发送策略卡片；若坚持约 3 小时仍拉不全，则改发一张「数据异常」
+告警卡片并跳过本次策略推送（详见 [数据源与限流说明](docs/data_source.md)）。
 **只想启用其中某条线**时，跳过其余线的回填与 `enable` 即可（三条线完全独立）。
 
 ### 1. 安装系统依赖
@@ -386,9 +394,12 @@ journalctl -u matrix-stock.service -n 100 --no-pager
 journalctl -u matrix-us.service -n 100 --no-pager
 ```
 
-ETF 线默认在**周一至周五 19:15**、A 股线在 **20:30**、美股线在 **21:45**（三线固定错开约
-1 小时以彻底避免重叠、互抢数据源限速额度）运行，`Persistent=true` 会在错过时补跑。如需调整时间，
-编辑对应 `.timer` 的 `OnCalendar` 后 `systemctl daemon-reload`。
+ETF 线默认在**周一至周五 19:15**、A 股线在 **20:30**（晚间错开），美股线放到**白天 14:00**
+（中国时区，与晚间 A 股/ETF 彻底错开，避免共享 tickflow 免费档限速额度；此时上一美股交易日
+已完整收盘）运行，`Persistent=true` 会在错过时补跑。由于收盘后各线会「持续拉取直至完成」
+（默认最长坚持约 3 小时，见 `SYNC_PERSIST_*` 配置），systemd service 的 `TimeoutStartSec`
+已相应放宽（ETF 4h、A 股 5h、美股 6h）。如需调整时间，编辑对应 `.timer` 的 `OnCalendar` 后
+`systemctl daemon-reload`。
 
 ### 7. 验证：手动跑一次并确认飞书收到推送
 

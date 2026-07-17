@@ -8,5 +8,5 @@ Type=oneshot
 WorkingDirectory=/opt/Matrix
 EnvironmentFile=-/opt/Matrix/.env
 ExecStart=/opt/Matrix/scripts/run_stock.sh
-TimeoutStartSec=4h
+TimeoutStartSec=5h
 Nice=10

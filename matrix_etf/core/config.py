@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     sync_retry_base_delay: float = 2.0
     sync_retry_max_delay: float = 60.0
 
+    # 数据同步「持续拉取直至完成」机制：收盘后不再「拉不到就用旧数据」，而是每隔
+    # sync_persist_round_interval 秒补拉一轮，直到覆盖到当日最新交易日（或覆盖率
+    # 收敛且达标）才发送策略卡片；坚持 sync_persist_max_seconds 秒仍拉不全，则发送
+    # 告警卡片并跳过本次策略推送。默认可在观察实际覆盖率后按需调整。
+    sync_persist_max_seconds: float = 10800.0  # 最长坚持 3 小时
+    sync_persist_round_interval: float = 300.0  # 每轮补拉间隔 5 分钟
+    sync_persist_target_coverage: float = 0.9  # 覆盖率达此比例即视为拉取完成
+    sync_persist_min_coverage: float = 0.5  # 覆盖率收敛后仍可接受的最低下限
+
     # 交易日保护：日常模式默认跳过周末和配置的 A 股休市日
     skip_non_trading_day: bool = True
     cn_market_holidays: str = ""

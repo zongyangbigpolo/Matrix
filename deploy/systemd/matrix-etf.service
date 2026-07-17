@@ -8,5 +8,5 @@ Type=oneshot
 WorkingDirectory=/opt/Matrix
 EnvironmentFile=-/opt/Matrix/.env
 ExecStart=/opt/Matrix/scripts/run_matrix.sh
-TimeoutStartSec=2h
+TimeoutStartSec=4h
 Nice=5

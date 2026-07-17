@@ -184,19 +184,29 @@ flowchart TD
     Sh1 --> Py1[".venv/bin/python main.py"]
     Py1 --> DB1[("data/matrix_etf.db")]
 
-    Timer2["systemd timer<br/>matrix-stock.timer<br/>周一~周五 19:40"] --> Svc2["systemd service<br/>matrix-stock.service"]
+    Timer2["systemd timer<br/>matrix-stock.timer<br/>周一~周五 20:30"] --> Svc2["systemd service<br/>matrix-stock.service"]
     Svc2 --> Sh2["scripts/run_stock.sh<br/>独立 flock 锁"]
     Sh2 --> Py2[".venv/bin/python stock_main.py"]
     Py2 --> DB2[("data/matrix_stock.db")]
 
+    Timer3["systemd timer<br/>matrix-us.timer<br/>周一~周五 14:00（白天）"] --> Svc3["systemd service<br/>matrix-us.service"]
+    Svc3 --> Sh3["scripts/run_us.sh<br/>独立 flock 锁"]
+    Sh3 --> Py3[".venv/bin/python us_main.py"]
+    Py3 --> DB3[("data/matrix_us.db")]
+
     Py1 --> TF["tickflow API (出站 HTTPS)"]
     Py2 --> TF
+    Py3 --> TF
     Py1 --> Fs["飞书 Webhook (出站 HTTPS)"]
     Py2 --> Fs
+    Py3 --> Fs
 ```
 
-两条线各自独立的 timer / service / 运行脚本 / 锁文件 / 数据库，可单独启停、互不阻塞；
-时间错开（ETF 19:15、股票 19:40）以分散对 tickflow 数据源的压力。
+三条线各自独立的 timer / service / 运行脚本 / 锁文件 / 数据库，可单独启停、互不阻塞；
+时间彻底错开（ETF 晚 19:15、A 股晚 20:30、美股放到白天 14:00）以分散对 tickflow 数据源
+（免费档 60/min 按来源 IP 计）的压力。收盘后各线还会「持续拉取直至完成」——反复补拉直到
+当日数据拉全或覆盖率达标才发策略卡片，坚持约 3 小时仍拉不全则改发告警卡片并跳过推送
+（详见 [data_source.md](data_source.md)）。
 
 部署步骤见 [../README.md](../README.md)。
 

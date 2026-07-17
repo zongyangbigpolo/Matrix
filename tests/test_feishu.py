@@ -216,3 +216,30 @@ def test_non_json_response_does_not_raise() -> None:
         notifier.send(symbols=["510300.SH"], strategy_name="Test")
 
     assert mock_post.call_count == 1
+
+
+def test_send_alert_posts_red_card() -> None:
+    """send_alert 应向默认 Webhook 推送一张红色告警卡片（标题含 Matrix 与中文名词）。"""
+    settings = make_settings(feishu_retry_attempts=1, feishu_retry_backoff_seconds=0.0)
+    notifier = FeishuNotifier(settings)
+
+    with patch("requests.post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"code": 0})
+        notifier.send_alert(message="⚠️ 数据仍未拉全", category="Stock")
+
+    assert mock_post.call_count == 1
+    body = json.loads(mock_post.call_args.kwargs["data"])
+    assert body["card"]["header"]["template"] == "red"
+    text = json.dumps(body, ensure_ascii=False)
+    assert "Matrix 个股数据异常" in text
+    assert "数据仍未拉全" in text
+
+
+def test_build_alert_card_category_nouns() -> None:
+    """告警卡片标题应按类别使用正确中文名词（ETF / 美股）。"""
+    settings = make_settings()
+    notifier = FeishuNotifier(settings)
+    etf = json.dumps(notifier._build_alert_card("x", "ETF"), ensure_ascii=False)
+    us = json.dumps(notifier._build_alert_card("x", "US"), ensure_ascii=False)
+    assert "Matrix ETF数据异常" in etf
+    assert "Matrix 美股数据异常" in us

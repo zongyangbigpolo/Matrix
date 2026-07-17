@@ -181,8 +181,52 @@ class FeishuNotifier:
         Raises:
             HTTP 请求异常、非 JSON 响应或飞书错误码会记录日志，不向主流程抛出。
         """
-        url = self.settings.get_webhook_url(webhook_key)
         payload = self._build_card(symbols, strategy_name, category, stale_warning)
+        self._post(payload, webhook_key, success_desc=f"共 {len(symbols)} 只标的")
+
+    def _build_alert_card(self, message: str, category: str = "ETF") -> dict:
+        """构造纯告警卡片（红色标题），用于数据拉取失败等异常提醒。"""
+        noun = self._category_noun(category)
+        return {
+            "msg_type": "interactive",
+            "card": {
+                "header": {
+                    "title": {
+                        "tag": "plain_text",
+                        "content": f"Matrix {noun}数据异常",
+                    },
+                    "template": "red",
+                },
+                "elements": [
+                    {
+                        "tag": "div",
+                        "text": {"tag": "lark_md", "content": message},
+                    }
+                ],
+            },
+        }
+
+    def send_alert(
+        self,
+        message: str,
+        category: str = "ETF",
+        webhook_key: str = "default",
+    ) -> None:
+        """发送一张纯告警卡片（如「数据多次重试后仍未拉全」）。
+
+        用于「持续拉取直至完成」机制超时失败时提醒，本次不再推送任何策略卡片。
+
+        Args:
+            message: 告警正文（支持 lark_md）。
+            category: 产品类别，决定标题中的中文名词（个股 / 美股 / ETF）。
+            webhook_key: 目标机器人标识，默认走 feishu_webhook_url 主群。
+        """
+        payload = self._build_alert_card(message, category)
+        self._post(payload, webhook_key, success_desc="告警卡片")
+
+    def _post(self, payload: dict, webhook_key: str, success_desc: str) -> None:
+        """将卡片 payload POST 至对应 Webhook，带重试；异常仅记录日志不抛出。"""
+        url = self.settings.get_webhook_url(webhook_key)
         attempts = max(1, int(self.settings.feishu_retry_attempts))
 
         for attempt in range(1, attempts + 1):
@@ -207,9 +251,7 @@ class FeishuNotifier:
                     )
                 else:
                     if resp.status_code == 200 and resp_json.get("code") == 0:
-                        logger.info(
-                            f"飞书推送成功 [{webhook_key}]，共 {len(symbols)} 只标的"
-                        )
+                        logger.info(f"飞书推送成功 [{webhook_key}]，{success_desc}")
                         return
                     retryable = resp.status_code in (429,) or resp.status_code >= 500
                     message = (

@@ -9,7 +9,7 @@ from hypothesis import strategies as st
 
 import stock_main as stock_main_module
 from matrix_etf.core.config import Settings
-from matrix_etf.notify.feishu import FeishuNotifier as _RealNotifier
+from matrix_etf.data.sync_runner import SyncOutcome
 
 
 @given(error_msg=st.text(min_size=1, max_size=100))
@@ -49,31 +49,39 @@ def test_stock_build_strategies_covers_six_stock_strategies() -> None:
     assert all(s.webhook_key.startswith("stock_") for s in strategies)
 
 
-def test_stock_main_degrades_and_flags_stale_on_sync_failure(monkeypatch) -> None:
-    """股票日 K 增量失败时应基于本地数据继续跑策略，并在推送时携带更新失败提示。"""
-    settings = Settings(
+def _make_settings() -> Settings:
+    return Settings(
         db_path="data/test.db",
         start_date="2020-01-01",
         feishu_webhook_url="https://example.com/hook",
     )
+
+
+def test_stock_main_sends_alert_and_skips_on_sync_failure(monkeypatch) -> None:
+    """股票持续拉取失败时应发送告警卡片并跳过全部策略推送。"""
+    settings = _make_settings()
     monkeypatch.setattr(stock_main_module, "get_settings", lambda: settings)
 
     fake_engine = MagicMock()
-    fake_engine.sync_universe_and_get_symbols.side_effect = RuntimeError("universe boom")
+    fake_engine.sync_universe_and_get_symbols.return_value = ["600519.SH"]
     fake_engine.get_local_symbols.return_value = ["600519.SH"]
-    fake_engine.sync_daily.side_effect = RuntimeError("kline boom")
     monkeypatch.setattr(stock_main_module, "StockDataEngine", lambda *a, **k: fake_engine)
 
-    captured: list[dict] = []
+    failed = SyncOutcome(False, 0, 1, "2026-07-15", 3, 9000.0, "timeout")
+    monkeypatch.setattr(stock_main_module, "sync_until_stable", lambda *a, **k: failed)
+
+    sent: list[dict] = []
+    alerts: list[dict] = []
 
     class _FakeNotifier:
-        build_stale_warning = staticmethod(_RealNotifier.build_stale_warning)
-
         def __init__(self, *a, **k) -> None:
             pass
 
         def send(self, **kwargs) -> None:
-            captured.append(kwargs)
+            sent.append(kwargs)
+
+        def send_alert(self, **kwargs) -> None:
+            alerts.append(kwargs)
 
     monkeypatch.setattr(stock_main_module, "FeishuNotifier", _FakeNotifier)
 
@@ -87,6 +95,51 @@ def test_stock_main_degrades_and_flags_stale_on_sync_failure(monkeypatch) -> Non
     monkeypatch.setattr("sys.argv", ["stock_main.py", "--force"])
     stock_main_module.main()
 
-    assert captured, "更新失败也应基于本地数据继续推送"
-    assert all(c["stale_warning"] and "数据更新失败" in c["stale_warning"] for c in captured)
-    assert all(c["category"] == "Stock" for c in captured)
+    assert len(alerts) == 1
+    assert alerts[0]["category"] == "Stock"
+    assert not sent
+    fake_strategy.run.assert_not_called()
+
+
+def test_stock_main_runs_strategies_on_sync_success(monkeypatch) -> None:
+    """股票持续拉取成功时应正常跑策略并推送（不带 stale_warning）。"""
+    settings = _make_settings()
+    monkeypatch.setattr(stock_main_module, "get_settings", lambda: settings)
+
+    fake_engine = MagicMock()
+    fake_engine.sync_universe_and_get_symbols.return_value = ["600519.SH"]
+    fake_engine.get_local_symbols.return_value = ["600519.SH"]
+    monkeypatch.setattr(stock_main_module, "StockDataEngine", lambda *a, **k: fake_engine)
+
+    ok = SyncOutcome(True, 1, 1, "2026-07-16", 1, 1.0, "covered")
+    monkeypatch.setattr(stock_main_module, "sync_until_stable", lambda *a, **k: ok)
+
+    sent: list[dict] = []
+    alerts: list[dict] = []
+
+    class _FakeNotifier:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        def send(self, **kwargs) -> None:
+            sent.append(kwargs)
+
+        def send_alert(self, **kwargs) -> None:
+            alerts.append(kwargs)
+
+    monkeypatch.setattr(stock_main_module, "FeishuNotifier", _FakeNotifier)
+
+    fake_strategy = MagicMock()
+    fake_strategy.run.return_value = ["600519.SH"]
+    fake_strategy.webhook_key = "stock_turtle"
+    monkeypatch.setattr(
+        stock_main_module, "_build_strategies", lambda engine, settings: [fake_strategy]
+    )
+
+    monkeypatch.setattr("sys.argv", ["stock_main.py", "--force"])
+    stock_main_module.main()
+
+    assert not alerts
+    assert sent
+    assert all(c["category"] == "Stock" for c in sent)
+    assert all("stale_warning" not in c for c in sent)
