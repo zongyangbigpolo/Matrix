@@ -36,8 +36,26 @@ class UsRpsMomentumStrategy(BaseStrategy):
 
         try:
             with sqlite3.connect(self.engine.db_path) as conn:
+                latest_row = conn.execute(
+                    "SELECT MAX(date) FROM stock_daily"
+                ).fetchone()
+                latest_str = latest_row[0] if latest_row else None
+                if not latest_str:
+                    return []
+
+                # 只读计算所需的最近窗口，避免把全市场 5 年日 K 一次性载入内存
+                # （12021 只 × 数年 ≈ 千万行，小内存机器会 OOM）。RPS 需要 period 天
+                # 做区间涨幅 + MA50，故取 period + 60 个交易日冗余，再按 ~1.6 倍换算成
+                # 日历天数以覆盖周末与假期。
+                lookback_days = int((period + 60) * 1.6)
+                cutoff = (
+                    pd.Timestamp(latest_str) - pd.Timedelta(days=lookback_days)
+                ).strftime("%Y-%m-%d")
                 df = pd.read_sql(
-                    "SELECT symbol, date, close, volume FROM stock_daily", conn
+                    "SELECT symbol, date, close, volume FROM stock_daily "
+                    "WHERE date >= ?",
+                    conn,
+                    params=[cutoff],
                 )
         except Exception as exc:  # noqa: BLE001
             logger.error(f"读取美股数据库失败：{exc}")
