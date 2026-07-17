@@ -169,6 +169,9 @@ python main.py --backfill
 | `CN_MARKET_HOLIDAYS` | 否 | 空 | 逗号分隔的 A 股休市日，格式 `YYYY-MM-DD` |
 | `US_MARKET_HOLIDAYS` | 否 | 空 | 逗号分隔的美股休市日，格式 `YYYY-MM-DD` |
 | `FEISHU_RETRY_ATTEMPTS` | 否 | `3` | 飞书请求对网络/临时错误的最大尝试次数 |
+| `SYNC_RETRY_ATTEMPTS` | 否 | `6` | 数据同步遇 tickflow 限流（60/min）时的最大尝试次数 |
+| `SYNC_RETRY_BASE_DELAY` | 否 | `2` | 同步重试的指数退避基准秒数 |
+| `SYNC_RETRY_MAX_DELAY` | 否 | `60` | 同步重试单次等待上限秒数 |
 | `STRATEGY_WEBHOOK_<KEY>` | 否 | — | 策略专属 webhook，KEY 见下表 |
 
 ETF 策略与 webhook_key 对应关系：

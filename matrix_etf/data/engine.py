@@ -13,6 +13,7 @@ import pandas as pd
 
 from matrix_etf.core.config import Settings
 from matrix_etf.core.logger import get_logger
+from matrix_etf.data.rate_limit import call_with_retry
 
 logger = get_logger(__name__)
 
@@ -114,8 +115,22 @@ class DataEngine:
         self.start_date: str = settings.start_date
         self.universe: str = settings.etf_universe
         self.api_key: str = settings.tickflow_api_key
+        self._retry_attempts: int = settings.sync_retry_attempts
+        self._retry_base_delay: float = settings.sync_retry_base_delay
+        self._retry_max_delay: float = settings.sync_retry_max_delay
         self._tf = None
         self._init_db()
+
+    def _retry(self, func, what: str):
+        """按引擎的限流重试配置调用 ``func``（详见 data.rate_limit）。"""
+        return call_with_retry(
+            func,
+            attempts=self._retry_attempts,
+            base_delay=self._retry_base_delay,
+            max_delay=self._retry_max_delay,
+            logger=logger,
+            what=what,
+        )
 
     # ── 数据库 ──
 
@@ -304,7 +319,9 @@ class DataEngine:
     def get_universe_symbols(self) -> list[str]:
         """从 tickflow 拉取 ETF 标的池的全部 symbol。"""
         tf = self._client()
-        detail = tf.universes.get(self.universe)
+        detail = self._retry(
+            lambda: tf.universes.get(self.universe), what=f"标的池 {self.universe}"
+        )
         symbols = list(detail.get("symbols", [])) if isinstance(detail, dict) else []
         logger.info(f"标的池 {self.universe} 含 {len(symbols)} 只 ETF")
         return symbols
@@ -321,9 +338,11 @@ class DataEngine:
 
         for symbol in symbols:
             try:
-                ins = tf.instruments.get(symbol)
+                ins = self._retry(
+                    lambda s=symbol: tf.instruments.get(s), what=f"基础信息[{symbol}]"
+                )
             except Exception as exc:  # noqa: BLE001
-                logger.warning(f"[{symbol}] 基础信息获取失败：{exc}")
+                logger.warning(f"[{symbol}] 基础信息获取失败（已重试）：{exc}")
                 ins = None
 
             if not isinstance(ins, dict):
@@ -414,26 +433,42 @@ class DataEngine:
     # ── 日 K 同步 ──
 
     def _fetch_batch(self, symbols: list[str], count: int) -> dict[str, pd.DataFrame]:
-        """批量拉取日 K，返回 {symbol: DataFrame}。"""
+        """批量拉取日 K，返回 {symbol: DataFrame}。
+
+        批量请求本身带限流重试；仅在**非限流**错误时才回退到逐只拉取，避免在被限流
+        时把一次批量请求放大成上百次单只请求、反而把 60/min 额度打得更死。
+        """
+        from matrix_etf.data.rate_limit import is_rate_limit_error
+
         tf = self._client()
         try:
-            result = tf.klines.batch(
-                symbols,
-                period="1d",
-                count=count,
-                as_dataframe=True,
+            result = self._retry(
+                lambda: tf.klines.batch(
+                    symbols, period="1d", count=count, as_dataframe=True
+                ),
+                what=f"批量日 K（{len(symbols)} 只）",
             )
+            return result if isinstance(result, dict) else {}
         except Exception as exc:  # noqa: BLE001
+            if is_rate_limit_error(exc):
+                logger.error(
+                    f"批量日 K 多次重试仍被限流，本批 {len(symbols)} 只暂跳过：{exc}"
+                )
+                return {}
             logger.error(f"批量拉取日 K 失败，回退单只拉取：{exc}")
-            result = {}
-            for symbol in symbols:
-                try:
-                    result[symbol] = tf.klines.get(
-                        symbol, period="1d", count=count, as_dataframe=True
-                    )
-                except Exception as inner:  # noqa: BLE001
-                    logger.warning(f"[{symbol}] 日 K 获取失败：{inner}")
-        return result if isinstance(result, dict) else {}
+
+        result: dict[str, pd.DataFrame] = {}
+        for symbol in symbols:
+            try:
+                result[symbol] = self._retry(
+                    lambda s=symbol: tf.klines.get(
+                        s, period="1d", count=count, as_dataframe=True
+                    ),
+                    what=f"日 K[{symbol}]",
+                )
+            except Exception as inner:  # noqa: BLE001
+                logger.warning(f"[{symbol}] 日 K 获取失败（已重试）：{inner}")
+        return result
 
     @staticmethod
     def _extract_name(df: pd.DataFrame) -> str | None:

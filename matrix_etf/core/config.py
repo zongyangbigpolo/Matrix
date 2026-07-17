@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     feishu_retry_attempts: int = 3
     feishu_retry_backoff_seconds: float = 1.0
 
+    # 数据同步重试（应对 tickflow 免费档 60/min 限流）：被限流不直接放弃，
+    # 而是按指数退避多次重试，尽力把当日数据拉全，仅在多次仍失败时才降级。
+    sync_retry_attempts: int = 6
+    sync_retry_base_delay: float = 2.0
+    sync_retry_max_delay: float = 60.0
+
     # 交易日保护：日常模式默认跳过周末和配置的 A 股休市日
     skip_non_trading_day: bool = True
     cn_market_holidays: str = ""

@@ -36,5 +36,8 @@ class UsStockDataEngine(StockDataEngine):
         self.start_date: str = settings.us_start_date
         self.universe: str = settings.us_universe
         self.api_key: str = settings.tickflow_api_key
+        self._retry_attempts: int = settings.sync_retry_attempts
+        self._retry_base_delay: float = settings.sync_retry_base_delay
+        self._retry_max_delay: float = settings.sync_retry_max_delay
         self._tf = None
         self._init_db()
