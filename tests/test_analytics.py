@@ -364,3 +364,148 @@ def test_settings_analytics_parsing():
         assert s.get_analytics_horizons() == [5, 10, 20]  # 去重、跳过非法
         assert s.get_analytics_windows() == [90, 180]  # 空 → 默认
         assert abs(sum(s.get_score_weights().values()) - 1.0) < 1e-9
+
+
+# ── replay 历史回放 ──
+
+
+import sqlite3  # noqa: E402
+
+from matrix_etf.analytics import replay  # noqa: E402
+
+
+def _write_market_db(path: str, frames: list[pd.DataFrame]) -> None:
+    """把若干标的的日 K 写入一个 etf_daily 结构的 SQLite 库（供回放测试用）。"""
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """CREATE TABLE etf_daily (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT, date TEXT, open REAL, high REAL, low REAL,
+                close REAL, volume REAL, amount REAL, UNIQUE(symbol, date))"""
+        )
+        conn.execute("CREATE INDEX idx ON etf_daily(symbol, date)")
+        for df in frames:
+            df[["symbol", "date", "open", "high", "low", "close", "volume", "amount"]].to_sql(
+                "etf_daily", conn, if_exists="append", index=False
+            )
+
+
+class MiniEngine:
+    """指向真实 SQLite 文件、逐只读取的最小引擎（回放会临时改写其 db_path）。"""
+
+    def __init__(self, db_path: str) -> None:
+        self.db_path = db_path
+
+    def get_ohlcv(self, symbol: str) -> pd.DataFrame:
+        with sqlite3.connect(self.db_path) as conn:
+            return pd.read_sql(
+                "SELECT * FROM etf_daily WHERE symbol=? ORDER BY date", conn, params=(symbol,)
+            )
+
+    def get_local_symbols(self) -> list[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute("SELECT DISTINCT symbol FROM etf_daily ORDER BY symbol").fetchall()
+        return [r[0] for r in rows]
+
+
+class LastCloseTopStrategy:
+    """选「当前可见数据里最后一根收盘价最高」的标的——对封顶日期敏感，用于验证无前视。"""
+
+    webhook_key = "test"
+    suggested_hold_days = 5
+
+    def __init__(self, engine):
+        self.engine = engine
+
+    def run(self) -> list[str]:
+        best, best_close = None, float("-inf")
+        for sym in self.engine.get_local_symbols():
+            df = self.engine.get_ohlcv(sym)
+            if df.empty:
+                continue
+            c = float(df.iloc[-1]["close"])
+            if c > best_close:
+                best, best_close = sym, c
+        return [best] if best else []
+
+
+def test_get_as_of_dates_and_shrink():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = str(Path(tmp) / "mkt.db")
+        _write_market_db(db, [build_prices("AAA", "2026-06-01", list(range(100, 130)))])
+        dates = replay.get_as_of_dates(db, "etf_daily", 5)
+        assert len(dates) == 5
+        assert dates == sorted(dates)  # 升序
+        # 裁剪到中间某日后，MAX(date) 不应超过该日
+        cutoff = dates[0]
+        replay._shrink_to(db, "etf_daily", cutoff)
+        with sqlite3.connect(db) as conn:
+            mx = conn.execute("SELECT MAX(date) FROM etf_daily").fetchone()[0]
+        assert mx <= cutoff
+
+
+def test_capped_engine_db_swaps_and_restores():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = str(Path(tmp) / "mkt.db")
+        _write_market_db(db, [build_prices("AAA", "2026-06-01", list(range(100, 120)))])
+        engine = MiniEngine(db)
+        original = engine.db_path
+        with replay.capped_engine_db(engine, "etf_daily") as tmp_path:
+            assert engine.db_path == tmp_path
+            assert tmp_path != original
+            assert Path(tmp_path).exists()
+        # 退出后：复原 db_path 并清理临时文件
+        assert engine.db_path == original
+        assert not Path(tmp_path).exists()
+
+
+def test_replay_no_lookahead_records_backdated_signals():
+    with tempfile.TemporaryDirectory() as tmp:
+        # 构造两只标的：AAA 先高后崩，BBB 稳步走高。
+        # 早期（可见数据少）AAA 最后收盘更高 → 应选 AAA；
+        # 后期 AAA 已崩、BBB 更高 → 应选 BBB。若泄漏未来数据，早期也会误选 BBB。
+        aaa = build_prices("AAA", "2026-06-01", [100, 130, 160, 120, 90, 70, 60, 55, 50, 48])
+        bbb = build_prices("BBB", "2026-06-01", [100, 101, 102, 103, 104, 108, 112, 118, 125, 132])
+        db = str(Path(tmp) / "mkt.db")
+        _write_market_db(db, [aaa, bbb])
+
+        settings = make_settings(tmp, analytics_horizons="3")
+        analytics = AnalyticsEngine(settings)
+        store = SignalStore(analytics)
+        engine = MiniEngine(db)
+
+        inserted = replay.replay_market(
+            engine, [LastCloseTopStrategy(engine)], "ETF", store, days=8
+        )
+        assert inserted > 0
+        # db_path 已复原
+        assert engine.db_path == db
+
+        with analytics.connect() as conn:
+            picks = conn.execute(
+                "SELECT run_date, symbol FROM strategy_signal ORDER BY run_date"
+            ).fetchall()
+        by_date = {d: s for d, s in picks}
+        early_dates = sorted(by_date)[:2]
+        late_dates = sorted(by_date)[-2:]
+        # 早期应选 AAA（当时它最后收盘最高），晚期应选 BBB —— 证明只用了可见数据
+        assert all(by_date[d] == "AAA" for d in early_dates)
+        assert all(by_date[d] == "BBB" for d in late_dates)
+
+
+def test_replay_summary_and_format():
+    with tempfile.TemporaryDirectory() as tmp:
+        settings = make_settings(tmp)
+        engine = AnalyticsEngine(settings)
+        run_date = (date.today() - timedelta(days=30)).isoformat()
+        for i in range(3):
+            _insert_closed_trade(engine, "ETF", "TrendMaStrategy", run_date, 5,
+                                 ret=0.02 + 0.01 * i, excess=0.01, seq=i)
+        rows = replay.replay_summary(engine)
+        assert len(rows) == 1
+        assert rows[0]["strategy"] == "TrendMaStrategy"
+        assert rows[0]["n"] == 3
+        assert rows[0]["win_rate"] == pytest.approx(1.0)
+        text = replay.format_summary(rows)
+        assert "TrendMaStrategy" in text
+        assert replay.format_summary([]).startswith("（暂无")

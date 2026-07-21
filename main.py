@@ -51,6 +51,19 @@ def _parse_symbols(value: str | None) -> list[str] | None:
     return symbols or None
 
 
+def build_strategies(engine: DataEngine, settings) -> list[BaseStrategy]:
+    """装配 ETF 线全部策略实例（供日常运行与绩效历史回放复用）。"""
+    return [
+        RpsMomentumStrategy(engine=engine, settings=settings),
+        TrendMaStrategy(engine=engine, settings=settings),
+        BreakoutVolumeStrategy(engine=engine, settings=settings),
+        MeanReversionStrategy(engine=engine, settings=settings),
+        RiskAdjustedMomentumStrategy(engine=engine, settings=settings),
+        VolumeConfirmedMomentumStrategy(engine=engine, settings=settings),
+        LowVolTrendRotationStrategy(engine=engine, settings=settings),
+    ]
+
+
 def _run_backfill(engine: DataEngine, requested: list[str] | None, logger) -> None:
     logger.info("进入回填模式...")
     if requested:
@@ -192,15 +205,7 @@ def main() -> None:
                 return
             engine.refresh_metrics(symbols)
 
-        strategies: list[BaseStrategy] = [
-            RpsMomentumStrategy(engine=engine, settings=settings),
-            TrendMaStrategy(engine=engine, settings=settings),
-            BreakoutVolumeStrategy(engine=engine, settings=settings),
-            MeanReversionStrategy(engine=engine, settings=settings),
-            RiskAdjustedMomentumStrategy(engine=engine, settings=settings),
-            VolumeConfirmedMomentumStrategy(engine=engine, settings=settings),
-            LowVolTrendRotationStrategy(engine=engine, settings=settings),
-        ]
+        strategies: list[BaseStrategy] = build_strategies(engine, settings)
         analytics = AnalyticsHook(settings, market="ETF")
 
         for strategy in strategies:

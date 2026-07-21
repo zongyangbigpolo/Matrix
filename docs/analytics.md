@@ -199,9 +199,11 @@ matrix_etf/analytics/
 ├── metrics.py       # 纯函数：total_return / ann_return / max_drawdown /
 │                    #          win_rate / sharpe / sortino / alpha（无 IO，易测）
 ├── forward.py       # ForwardEvaluator：读信号 + 行情 → 写 signal_evaluation
+├── replay.py        # 历史回放：日期封顶副本重建过去信号（无前视，见 §7b）
 ├── scorecard.py     # ScorecardBuilder：聚合 → 写 strategy_scorecard + 综合评分
 ├── report.py        # 供飞书卡片读取"最近评分行"的只读查询
-└── backtest.py      # vectorbt 离线历史回测引擎（重，不上服务器）
+├── integration.py   # AnalyticsHook：选股线唯一侵入点（容错落库 + 战绩文案）
+└── backtest.py      # vectorbt 离线历史回测引擎（重，不上服务器，P5 未实现）
 ```
 
 `metrics.py` 是纯函数库（输入 pandas Series/DataFrame，输出标量），**不碰 IO**，
@@ -252,6 +254,29 @@ if selected:
 
 **内存**：只按需读取涉及标的的最近窗口行情（复用 §12 思路），逐市场/逐批处理，
 绝不全表载入。
+
+### 7b. 历史回放 bootstrap（`replay.py`，无前视偏差，可服务器手动跑）
+
+前向跟踪只对「运行时已落库」的信号算收益——刚上线时台账为空，得等每天积累。
+`replay.py` 提供一次性**历史回放**，让每个策略「假装回到过去某个交易日」重新选一次
+股，据此补齐历史信号，随后即可用 §7 的评估器算出真实兑现收益。入口：
+`python analytics_main.py --replay --days 20`。
+
+**杜绝前视偏差的做法**：把行情引擎的 `db_path` 临时指向一个「日期封顶」的临时库
+副本——副本只保留 `date <= 回放日` 的日 K。于是无论策略是逐只读取
+（`engine.get_ohlcv`）还是横截面 RPS 直连 `sqlite3.connect(engine.db_path)` 读全表，
+看到的都只是回放日及以前的数据（其 `MAX(date)` 即回放日）。副本按回放日从新到旧
+递减、逐步 `DELETE` 掉更晚的行，**一次文件拷贝 + 若干次轻量删除**，逐只读取不整表
+载入，内存友好。
+
+**选股用封顶库，评估用真实库**：重建信号（选股）严格只用 `≤回放日` 的数据；随后的
+兑现收益评估（§7）用**真实全量库**读回放日之后的价格——那是合法的「未来实现」，
+不是前视。二者分离是整个设计的关键。
+
+**局限**：持有期为 5/10/20/60 交易日，短窗口回放里只有较早日期的 5 日档能闭合；
+综合评分需样本 ≥ `analytics_min_samples`（默认 10），短窗口多为「样本不足」。故
+`--replay` 额外打印一张**不设最小样本门槛**的逐笔等权收益汇总表（各市场×策略×持有
+期的样本数 / 平均收益 / 胜率 / 平均超额），让你短窗口也能立刻看到「每种策略的收益率」。
 
 ---
 
@@ -406,14 +431,17 @@ score_weights: dict = {...}                     # §10 的六项权重
 ```bash
 python analytics_main.py --evaluate      # 前向：刷新兑现收益 + 评分卡（服务器每日）
 python analytics_main.py --sync-benchmark # 仅更新基准行情缓存
-python analytics_main.py --backtest       # vectorbt 历史回测（本地/按需，重）
+python analytics_main.py --replay --days 20 # 历史回放：无前视重建过去N交易日信号并评估
 python analytics_main.py --report         # 打印各策略最新评分卡（人工查看）
+# python analytics_main.py --backtest     # vectorbt 历史回测（P5 未实现，本地/按需，重）
 ```
 
 **部署（服务器）**：
 - 新增 `matrix-analytics.timer/.service`，在三条选股线**全部收盘同步完成之后**触发
   （例如 A 股线 20:30、ETF 19:15 之后，排到 **21:30** 跑 `--evaluate`），错峰、内存不打架。
 - `--backtest` **不配定时器**，仅手动/本地运行。
+- `--replay` **不配定时器**，为一次性/按需 bootstrap（无前视重建历史信号，见 §7b），
+  在服务器上手动跑一次即可让评分卡立刻有数据。
 
 ---
 
