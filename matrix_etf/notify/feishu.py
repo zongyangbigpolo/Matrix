@@ -94,6 +94,7 @@ class FeishuNotifier:
         strategy_name: str,
         category: str = "ETF",
         stale_warning: str | None = None,
+        perf_line: str | None = None,
     ) -> dict:
         today = date.today().strftime("%Y-%m-%d")
         names = self._get_names(symbols)
@@ -141,6 +142,16 @@ class FeishuNotifier:
             ]
         )
 
+        # 绩效战绩行（analytics 模块提供，可选）：展示该策略历史真实兑现收益
+        if perf_line:
+            elements.append({"tag": "hr"})
+            elements.append(
+                {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": perf_line},
+                }
+            )
+
         return {
             "msg_type": "interactive",
             "card": {
@@ -163,6 +174,7 @@ class FeishuNotifier:
         webhook_key: str = "default",
         category: str = "ETF",
         stale_warning: str | None = None,
+        perf_line: str | None = None,
     ) -> None:
         """
         将选股结果格式化为飞书卡片消息并 POST 至对应 Webhook。
@@ -177,11 +189,15 @@ class FeishuNotifier:
             category: 产品类别（如 'ETF'、'Stock'），用于卡片标题与文案。
             stale_warning: 数据更新失败时的提示文案；非空时卡片顶部会显示醒目
                 的红色警示，表明本次结果基于本地历史数据而非最新行情。
+            perf_line: 可选的策略历史战绩文案（由 analytics 模块生成），非空时
+                在卡片底部追加一行真实兑现收益/评分；容错缺省，不影响推送。
 
         Raises:
             HTTP 请求异常、非 JSON 响应或飞书错误码会记录日志，不向主流程抛出。
         """
-        payload = self._build_card(symbols, strategy_name, category, stale_warning)
+        payload = self._build_card(
+            symbols, strategy_name, category, stale_warning, perf_line
+        )
         self._post(payload, webhook_key, success_desc=f"共 {len(symbols)} 只标的")
 
     def _build_alert_card(self, message: str, category: str = "ETF") -> dict:

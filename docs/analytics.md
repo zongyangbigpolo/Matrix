@@ -6,8 +6,15 @@
 > vectorbt 历史回测引擎用于严谨复盘。最终目标：**每次推送飞书卡片时，能带上
 > 该策略过去的真实收益与评分**。
 
-本文档是**设计蓝图**，用于指导后续实现，不代表代码已落地。命名、字段、公式均可在
-实现阶段微调，但整体分层与数据模型应保持稳定。
+本文档既是**设计蓝图**也记录**落地状态**：P1–P4（信号落库 → 前向兑现收益 →
+评分卡 → 卡片增强）已实现并随三条选股线自动运行；P5（vectorbt 历史回测）为
+后续离线增强，尚未实现。命名、字段、公式可在迭代中微调，但整体分层与数据模型稳定。
+
+**已落地组件**（`matrix_etf/analytics/` + `analytics_main.py`）：
+`db.py`（独立库与四张表）、`signals.py`（信号落库）、`metrics.py`（指标纯函数）、
+`benchmark.py`（基准缓存）、`forward.py`（前向兑现收益）、`scorecard.py`（评分卡）、
+`report.py`（战绩文案）、`integration.py`（选股线容错 hook）。已接入三条选股 main
+与飞书卡片，并提供 `deploy/systemd/matrix-analytics.{service,timer}`（21:30 运行）。
 
 ---
 
@@ -426,26 +433,35 @@ python analytics_main.py --report         # 打印各策略最新评分卡（人
 
 ## 17. 分阶段实施计划
 
-| 阶段 | 内容 | 依赖 | 上服务器 |
-|---|---|---|---|
-| **P1 地基** | `analytics/db.py` + `strategy_signal` 表 + `SignalStore.record()` + 三 main 落库 hook + `suggested_hold_days` | 无 | ✅ |
-| **P2 前向收益** | `benchmark.py` + `metrics.py` + `forward.py` + `signal_evaluation` | P1 | ✅ |
-| **P3 评分卡** | `scorecard.py` + `strategy_scorecard` + `analytics_main.py --evaluate` + timer | P2 | ✅ |
-| **P4 卡片增强** | `report.py` + `notifier` 追加战绩行 | P3 | ✅ |
-| **P5 历史回测** | 为重点策略加 `signals_matrix()` + `backtest.py`（vectorbt） | P2 | ❌ 仅本地 |
+| 阶段 | 内容 | 依赖 | 上服务器 | 状态 |
+|---|---|---|---|---|
+| **P1 地基** | `analytics/db.py` + `strategy_signal` 表 + `SignalStore.record()` + 三 main 落库 hook + `suggested_hold_days` | 无 | ✅ | ✅ 已实现 |
+| **P2 前向收益** | `benchmark.py` + `metrics.py` + `forward.py` + `signal_evaluation` | P1 | ✅ | ✅ 已实现 |
+| **P3 评分卡** | `scorecard.py` + `strategy_scorecard` + `analytics_main.py --evaluate` + timer | P2 | ✅ | ✅ 已实现 |
+| **P4 卡片增强** | `report.py` + `notifier` 追加战绩行 | P3 | ✅ | ✅ 已实现 |
+| **P5 历史回测** | 为重点策略加 `signals_matrix()` + `backtest.py`（vectorbt） | P2 | ❌ 仅本地 | ⏳ 未实现 |
 
 P1–P4 用轻量 pandas，可安全上 1.8G 服务器；P5 是可选增强，离线跑。
 
+> **实现口径说明**：§8 描述的是逐日组合净值序列口径；P1–P4 落地时采用更易测试、
+> 内存更省的**逐笔口径**——每个到期平仓的信号按其 `suggested_hold_days` 记为一笔
+> 交易收益，`periods_per_year = trading_days / hold_days`，夏普/Sortino 以 √ppy
+> 年化。二者在样本充足时结论一致，逐笔口径是 P1–P4 的合理简化，P5 回测再回到
+> 逐日净值口径。
+
 ---
 
-## 18. 待你拍板的决策
+## 18. 已定稿的关键决策
 
-1. **建议持有天数**：接受 §11 的初值，还是你有更细的每策略偏好？
-2. **入场价口径**：T+1 开盘（更真实，推荐）还是 T 日收盘（更简单）？
-3. **基准**：A 股/ETF 用沪深300、美股用 SPY，是否 OK？还是美股想用 QQQ？
-4. **评分权重**：接受 §10 默认权重，还是想更看重某个维度（如更看重超额/回撤）？
-5. **实施节奏**：先只做 P1–P4（前向跟踪+评分卡+卡片增强），P5 vectorbt 回测以后再说，
-   还是这次一并规划到 P5？
+以下决策已确认并落地（初值可后续微调）：
+
+1. **建议持有天数**：采用 §11 初值（均落在 5/10/20/60），集中于 `strategy/hold_days.py`。
+2. **入场价口径**：T+1 开盘（避免前视偏差）。
+3. **基准**：A 股/ETF = 沪深300（`000300.SH`），美股 = 标普500（`SPY.US`）。
+4. **评分权重**：采用 §10 默认权重（年化 .30 / 超额 .25 / 夏普 .20 / Sortino .10 /
+   胜率 .10 / 回撤 .05），可经 `SCORE_WEIGHT_*` 覆盖。
+5. **实施节奏**：本次交付 P1–P4（前向跟踪 + 评分卡 + 卡片增强）；P5 vectorbt 回测
+   作为离线增强，后续按需推进。
 
 ---
 

@@ -28,6 +28,10 @@ class BaseStrategy(ABC):
 
     webhook_key: str = "default"
 
+    # 绩效评估用的建议持有天数（交易日口径），须落在 analytics_horizons 之一。
+    # 默认 None 表示未显式声明，将由 strategy.hold_days.resolve_hold_days 回退查表。
+    suggested_hold_days: int | None = None
+
     def __init__(
         self,
         engine: "DataEngine | StockDataEngine | UsStockDataEngine",

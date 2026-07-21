@@ -134,6 +134,22 @@ python main.py --backfill
 | `python us_main.py --symbols AAPL.US,MSFT.US` | 仅处理指定美股 |
 | `python us_main.py --force` | 日常模式下忽略周末/休市日保护，强制运行 |
 
+### 绩效分析线（`analytics_main.py`，独立于三条选股线）
+
+把每次选股结果落库为信号，随行情推进计算真实兑现收益，对比基准汇总为每个策略的
+评分卡（年化 / 超额 / 回撤 / 胜率 / 夏普 / Sortino / 0–100 综合评分），并在后续推送
+卡片时附上该策略历史战绩。设计与公式详见 [`docs/analytics.md`](docs/analytics.md)。
+
+| 命令 | 说明 |
+|------|------|
+| `python analytics_main.py --evaluate` | 前向评估：同步基准 + 兑现收益 + 评分卡（每日运行，默认模式） |
+| `python analytics_main.py --sync-benchmark` | 仅更新基准行情缓存（沪深300 / 标普500） |
+| `python analytics_main.py --report` | 打印各策略最新评分卡 |
+
+> 信号落库由三条选股线自动完成（每次推送前的容错 hook），无需手动操作；
+> `analytics_main.py` 只负责随后计算收益与评分。vectorbt 历史回测为离线增强，
+> 不在服务器定时器中运行。
+
 ## 配置项（.env）
 
 | 变量 | 必填 | 默认 | 说明 |
@@ -245,6 +261,11 @@ sudo cp deploy/systemd/matrix-us.service    deploy/systemd/matrix-us.timer    /e
 sudo systemctl daemon-reload
 sudo systemctl enable --now matrix-etf.timer matrix-stock.timer matrix-us.timer
 
+# 5b.（可选）启用绩效分析线：随三条选股线自动落库信号，21:30 计算兑现收益 + 评分卡
+sudo cp deploy/systemd/matrix-analytics.service deploy/systemd/matrix-analytics.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now matrix-analytics.timer
+
 # 6. 立刻手动跑一次，确认飞书能收到（见 §7）
 sudo systemctl start matrix-etf.service
 sudo systemctl start matrix-stock.service
@@ -253,7 +274,9 @@ sudo systemctl start matrix-us.service
 
 跑通后就不用再管了：ETF 线每周一至周五 **19:15**、A 股线 **20:30**（晚间错开），
 美股线放到**白天 14:00**（中国时区，此时上一美股交易日已完整收盘，且与晚间 A 股/ETF
-彻底错开，避免共享 tickflow 免费档 60/min 限额时相互抢占）。三线自动执行、互不阻塞，
+彻底错开，避免共享 tickflow 免费档 60/min 限额时相互抢占）。绩效分析线放到 **21:30**
+（晚于三条选股线，确保当日信号已全部落库、各行情库已同步到最新交易日再评估）。
+三线自动执行、互不阻塞，
 错过（如关机）会在开机后由 `Persistent=true` 补跑。收盘后每条线会**持续补拉**当日数据，
 直到拉全或覆盖率达标才发送策略卡片；若坚持约 3 小时仍拉不全，则改发一张「数据异常」
 告警卡片并跳过本次策略推送（详见 [数据源与限流说明](docs/data_source.md)）。
@@ -384,6 +407,15 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now matrix-us.timer
 ```
 
+绩效分析线（可选，随三条选股线自动落库信号，独立评估兑现收益 + 评分卡）：
+
+```bash
+sudo cp /opt/Matrix/deploy/systemd/matrix-analytics.service /etc/systemd/system/
+sudo cp /opt/Matrix/deploy/systemd/matrix-analytics.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now matrix-analytics.timer
+```
+
 查看状态与日志：
 
 ```bash
@@ -392,14 +424,16 @@ systemctl status matrix-etf.service matrix-stock.service matrix-us.service
 journalctl -u matrix-etf.service -n 100 --no-pager
 journalctl -u matrix-stock.service -n 100 --no-pager
 journalctl -u matrix-us.service -n 100 --no-pager
+journalctl -u matrix-analytics.service -n 100 --no-pager
 ```
 
 ETF 线默认在**周一至周五 19:15**、A 股线在 **20:30**（晚间错开），美股线放到**白天 14:00**
 （中国时区，与晚间 A 股/ETF 彻底错开，避免共享 tickflow 免费档限速额度；此时上一美股交易日
-已完整收盘）运行，`Persistent=true` 会在错过时补跑。由于收盘后各线会「持续拉取直至完成」
-（默认最长坚持约 3 小时，见 `SYNC_PERSIST_*` 配置），systemd service 的 `TimeoutStartSec`
-已相应放宽（ETF 4h、A 股 5h、美股 6h）。如需调整时间，编辑对应 `.timer` 的 `OnCalendar` 后
-`systemctl daemon-reload`。
+已完整收盘）运行，`Persistent=true` 会在错过时补跑。绩效分析线在 **21:30** 运行（晚于三条
+选股线，确保当日信号已全部落库、各行情库已同步到最新交易日再评估兑现收益与评分卡）。
+由于收盘后各线会「持续拉取直至完成」（默认最长坚持约 3 小时，见 `SYNC_PERSIST_*` 配置），
+systemd service 的 `TimeoutStartSec` 已相应放宽（ETF 4h、A 股 5h、美股 6h、分析线 2h）。
+如需调整时间，编辑对应 `.timer` 的 `OnCalendar` 后 `systemctl daemon-reload`。
 
 ### 7. 验证：手动跑一次并确认飞书收到推送
 

@@ -84,6 +84,28 @@ class Settings(BaseSettings):
     sync_persist_target_coverage: float = 0.9  # 覆盖率达此比例即视为拉取完成
     sync_persist_min_coverage: float = 0.5  # 覆盖率收敛后仍可接受的最低下限
 
+    # —— 绩效分析与回测（analytics 模块，完全独立的库与流水线）——
+    # 详见 docs/analytics.md。前向跟踪腿轻量，可上服务器每日跑；vectorbt 回测腿离线。
+    analytics_enabled: bool = True
+    analytics_db_path: str = "data/matrix_analytics.db"
+    # 前向兑现收益评估的持有期（交易日口径），策略建议持有天数须落在其中之一
+    analytics_horizons: str = "5,10,20,60"
+    # 评分卡统计窗口（自然日），可配多个，逗号分隔
+    analytics_windows: str = "90,180"
+    analytics_min_samples: int = 10  # 低于此样本数不给综合评分（避免误导性高分）
+    analytics_risk_free: float = 0.0  # 年化无风险利率
+    analytics_trading_days: int = 252
+    # 各市场对比基准
+    benchmark_cn: str = "000300.SH"  # A 股 / ETF 基准：沪深300
+    benchmark_us: str = "SPY.US"  # 美股基准：标普500 ETF
+    # 综合评分权重（六项之和应为 1.0），可按需微调
+    score_weight_ann_return: float = 0.30
+    score_weight_excess_alpha: float = 0.25
+    score_weight_sharpe: float = 0.20
+    score_weight_sortino: float = 0.10
+    score_weight_win_rate: float = 0.10
+    score_weight_max_drawdown: float = 0.05
+
     # 交易日保护：日常模式默认跳过周末和配置的 A 股休市日
     skip_non_trading_day: bool = True
     cn_market_holidays: str = ""
@@ -123,6 +145,45 @@ class Settings(BaseSettings):
             对应的 Webhook URL 字符串。
         """
         return self.strategy_webhooks.get(webhook_key.lower(), self.feishu_webhook_url)
+
+    @staticmethod
+    def _parse_int_list(raw: str) -> list[int]:
+        """将逗号分隔的字符串解析为去重升序的正整数列表。"""
+        values: list[int] = []
+        for part in str(raw).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                num = int(part)
+            except ValueError:
+                continue
+            if num > 0:
+                values.append(num)
+        return sorted(set(values))
+
+    def get_analytics_horizons(self) -> list[int]:
+        """前向评估的持有期列表（交易日），如 [5, 10, 20, 60]。"""
+        return self._parse_int_list(self.analytics_horizons) or [5, 10, 20, 60]
+
+    def get_analytics_windows(self) -> list[int]:
+        """评分卡统计窗口列表（自然日），如 [90, 180]。"""
+        return self._parse_int_list(self.analytics_windows) or [90, 180]
+
+    def get_score_weights(self) -> dict[str, float]:
+        """综合评分六项权重映射。"""
+        return {
+            "ann_return": self.score_weight_ann_return,
+            "excess_alpha": self.score_weight_excess_alpha,
+            "sharpe": self.score_weight_sharpe,
+            "sortino": self.score_weight_sortino,
+            "win_rate": self.score_weight_win_rate,
+            "max_drawdown": self.score_weight_max_drawdown,
+        }
+
+    def get_benchmark_for_market(self, market: str) -> str:
+        """按市场返回对比基准代码（ETF/CN → 沪深300，US → SPY）。"""
+        return self.benchmark_us if market.upper() == "US" else self.benchmark_cn
 
 
 _settings: Settings | None = None

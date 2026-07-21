@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Matrix strategy performance analytics after selection pipelines
+
+[Timer]
+# 21:30 运行：晚于 A 股线（20:30）与 ETF 线（19:15），确保当日选股信号已全部落库，
+# 且各行情库已同步到最新交易日，再据此推进兑现收益评估与评分卡；同时与晚间选股
+# 拉取窗口错开，避免共享 tickflow 免费档 60/min 限额时相互抢占。
+OnCalendar=Mon..Fri 21:30:00
+Persistent=true
+Unit=matrix-analytics.service
+
+[Install]
+WantedBy=timers.target

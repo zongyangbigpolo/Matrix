@@ -24,6 +24,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 socket.setdefaulttimeout(30.0)
 
+from matrix_etf.analytics.integration import AnalyticsHook  # noqa: E402
 from matrix_etf.core.config import get_settings  # noqa: E402
 from matrix_etf.core.logger import get_logger  # noqa: E402
 from matrix_etf.core.trading_calendar import get_non_trading_day_reason  # noqa: E402
@@ -200,6 +201,7 @@ def main() -> None:
             VolumeConfirmedMomentumStrategy(engine=engine, settings=settings),
             LowVolTrendRotationStrategy(engine=engine, settings=settings),
         ]
+        analytics = AnalyticsHook(settings, market="ETF")
 
         for strategy in strategies:
             strategy_name = type(strategy).__name__
@@ -209,10 +211,12 @@ def main() -> None:
             logger.info(f"{strategy_name} 选出 {len(selected)} 只 ETF")
 
             if selected:
+                perf_line = analytics.record_and_perf_line(strategy, selected)
                 notifier.send(
                     symbols=selected,
                     strategy_name=strategy_name,
                     webhook_key=strategy.webhook_key,
+                    perf_line=perf_line,
                 )
             else:
                 logger.info(f"{strategy_name} 无选股结果，跳过推送")
