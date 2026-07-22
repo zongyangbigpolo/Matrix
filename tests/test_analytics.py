@@ -509,3 +509,36 @@ def test_replay_summary_and_format():
         text = replay.format_summary(rows)
         assert "TrendMaStrategy" in text
         assert replay.format_summary([]).startswith("（暂无")
+
+
+def test_filter_strategies_by_name():
+    engine = MiniEngine("dummy.db")
+    strategies = [LastCloseTopStrategy(engine)]
+    # 子串、不区分大小写命中
+    assert replay.filter_strategies(strategies, "lastclose") == strategies
+    assert replay.filter_strategies(strategies, "TOP") == strategies
+    # 不命中 → 空列表
+    assert replay.filter_strategies(strategies, "rps") == []
+    # None → 原样返回
+    assert replay.filter_strategies(strategies, None) == strategies
+
+
+def test_replay_summary_filters_by_market_and_strategy():
+    with tempfile.TemporaryDirectory() as tmp:
+        settings = make_settings(tmp)
+        engine = AnalyticsEngine(settings)
+        run_date = (date.today() - timedelta(days=30)).isoformat()
+        _insert_closed_trade(engine, "ETF", "TrendMaStrategy", run_date, 5,
+                             ret=0.03, excess=0.01, seq=0)
+        _insert_closed_trade(engine, "CN", "RpsBreakoutStrategy", run_date, 5,
+                             ret=0.04, excess=0.02, seq=1)
+        # 只按市场过滤
+        etf_only = replay.replay_summary(engine, market="ETF")
+        assert len(etf_only) == 1
+        assert etf_only[0]["market"] == "ETF"
+        # 只按策略子串过滤（不区分大小写）
+        rps_only = replay.replay_summary(engine, strategy="rps")
+        assert len(rps_only) == 1
+        assert rps_only[0]["strategy"] == "RpsBreakoutStrategy"
+        # 市场 + 策略同时过滤，互斥组合 → 空
+        assert replay.replay_summary(engine, market="ETF", strategy="rps") == []

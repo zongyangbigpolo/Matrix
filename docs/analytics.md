@@ -278,6 +278,12 @@ if selected:
 `--replay` 额外打印一张**不设最小样本门槛**的逐笔等权收益汇总表（各市场×策略×持有
 期的样本数 / 平均收益 / 胜率 / 平均超额），让你短窗口也能立刻看到「每种策略的收益率」。
 
+**只跑某一个策略/市场**：A 股约 5500 只逐日回放是耗时大头，若只想看某一个策略，用
+`--market {ETF,CN,US}` 限定市场、`--strategy <子串>` 按类名筛选（不区分大小写、子串
+匹配，可组合）。二者仅缩小「选股」范围与汇总表输出；评估阶段对库里其它市场的历史
+信号无对应引擎时自动跳过（`ForwardEvaluator` 内 `engines.get(market) is None → continue`），
+不会报错。例如 `--replay --market CN --strategy rps` 只回放 A 股里类名含 `rps` 的策略。
+
 ---
 
 ## 8. 指标定义与公式（`metrics.py`）
@@ -432,6 +438,8 @@ score_weights: dict = {...}                     # §10 的六项权重
 python analytics_main.py --evaluate      # 前向：刷新兑现收益 + 评分卡（服务器每日）
 python analytics_main.py --sync-benchmark # 仅更新基准行情缓存
 python analytics_main.py --replay --days 20 # 历史回放：无前视重建过去N交易日信号并评估
+python analytics_main.py --replay --market ETF          # 只回放 ETF（快，避开 A 股全量）
+python analytics_main.py --replay --market CN --strategy rps  # 只回放 A 股里含 rps 的策略
 python analytics_main.py --report         # 打印各策略最新评分卡（人工查看）
 # python analytics_main.py --backtest     # vectorbt 历史回测（P5 未实现，本地/按需，重）
 ```

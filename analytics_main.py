@@ -32,6 +32,7 @@ from matrix_etf.analytics.benchmark import BenchmarkStore  # noqa: E402
 from matrix_etf.analytics.db import AnalyticsEngine  # noqa: E402
 from matrix_etf.analytics.forward import ForwardEvaluator  # noqa: E402
 from matrix_etf.analytics.replay import (  # noqa: E402
+    filter_strategies,
     format_summary,
     replay_market,
     replay_summary,
@@ -93,8 +94,19 @@ def _run_evaluate(settings, logger) -> None:
     ScorecardBuilder(analytics, settings).build_all(date.today().isoformat())
 
 
-def _run_replay(settings, logger, days: int) -> None:
-    """历史回放：无前视偏差重建过去 ``days`` 个交易日的选股信号，随后评估并汇总收益。"""
+def _run_replay(
+    settings,
+    logger,
+    days: int,
+    market: str | None = None,
+    strategy: str | None = None,
+) -> None:
+    """历史回放：无前视偏差重建过去 ``days`` 个交易日的选股信号，随后评估并汇总收益。
+
+    Args:
+        market: 只回放该市场（'ETF'/'CN'/'US'）；``None`` 则三个市场全跑。
+        strategy: 只回放类名包含该子串的策略（不区分大小写）；``None`` 则全部策略。
+    """
     analytics = AnalyticsEngine(settings)
     signal_store = SignalStore(analytics)
     benchmark_store = BenchmarkStore(analytics, settings)
@@ -103,12 +115,25 @@ def _run_replay(settings, logger, days: int) -> None:
     engines = _build_market_engines(settings)
     strategies_by_market = _build_market_strategies(engines, settings)
 
+    if market:
+        market = market.upper()
+        if market not in engines:
+            logger.error(f"未知市场 {market}，可选：{', '.join(engines)}。")
+            return
+        engines = {market: engines[market]}
+
     logger.info("开始逐市场历史回放（无前视偏差重建信号）...")
     total = 0
-    for market, engine in engines.items():
-        total += replay_market(
-            engine, strategies_by_market[market], market, signal_store, days
+    for mkt, engine in engines.items():
+        picks_strategies = filter_strategies(strategies_by_market[mkt], strategy)
+        if not picks_strategies:
+            logger.warning(f"[{mkt}] 无策略匹配 --strategy={strategy!r}，跳过。")
+            continue
+        logger.info(
+            f"[{mkt}] 本次回放 {len(picks_strategies)} 个策略："
+            f"{', '.join(type(s).__name__ for s in picks_strategies)}"
         )
+        total += replay_market(engine, picks_strategies, mkt, signal_store, days)
     logger.info(f"历史回放完成，累计新增信号 {total} 条。")
 
     logger.info("同步基准行情缓存...")
@@ -122,7 +147,7 @@ def _run_replay(settings, logger, days: int) -> None:
     ScorecardBuilder(analytics, settings).build_all(date.today().isoformat())
 
     print("\n===== 历史回放：各策略兑现收益汇总（逐笔等权，不设最小样本门槛）=====")
-    print(format_summary(replay_summary(analytics)))
+    print(format_summary(replay_summary(analytics, market=market, strategy=strategy)))
     print(
         "\n提示：持有期未到期的信号记为 open、暂不计入上表；"
         "综合评分需样本≥"
@@ -176,6 +201,17 @@ def main() -> None:
         default=20,
         help="--replay 回放的交易日数（默认 20）",
     )
+    parser.add_argument(
+        "--market",
+        choices=["ETF", "CN", "US", "etf", "cn", "us"],
+        default=None,
+        help="--replay 只回放指定市场（ETF/CN/US），缺省则三个市场全跑",
+    )
+    parser.add_argument(
+        "--strategy",
+        default=None,
+        help="--replay 只回放类名包含该子串的策略（不区分大小写，如 rps、breakout）",
+    )
     args = parser.parse_args()
 
     try:
@@ -184,7 +220,13 @@ def main() -> None:
         logger.info("Matrix 绩效分析启动")
 
         if args.replay:
-            _run_replay(settings, logger, max(1, args.days))
+            _run_replay(
+                settings,
+                logger,
+                max(1, args.days),
+                market=args.market,
+                strategy=args.strategy,
+            )
         elif args.sync_benchmark:
             analytics = AnalyticsEngine(settings)
             _sync_benchmarks(BenchmarkStore(analytics, settings), settings, logger)

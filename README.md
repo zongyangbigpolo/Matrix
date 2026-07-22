@@ -146,6 +146,8 @@ python main.py --backfill
 | `python analytics_main.py --sync-benchmark` | 仅更新基准行情缓存（沪深300 / 标普500） |
 | `python analytics_main.py --report` | 打印各策略最新评分卡 |
 | `python analytics_main.py --replay --days 20` | 历史回放：无前视偏差重建过去 20 个交易日的选股信号，随后即时评估并打印各策略兑现收益 |
+| `python analytics_main.py --replay --market ETF` | 只回放 ETF 市场（避开 A 股 5500 只，秒级出结果） |
+| `python analytics_main.py --replay --market CN --strategy rps` | 只回放 A 股里类名含 `rps` 的单个策略 |
 
 > 信号落库由三条选股线自动完成（每次推送前的容错 hook），无需手动操作；
 > `analytics_main.py` 只负责随后计算收益与评分。vectorbt 历史回测为离线增强，
@@ -155,7 +157,9 @@ python main.py --backfill
 > 某个交易日」只用当日及以前的数据重新选一次股，据此补齐历史信号再评估，**杜绝前视
 > 偏差**。注意持有期为 5/10/20/60 交易日，短窗口回放里只有较早日期的 5 日档能闭合，
 > 且综合评分需样本≥10，短窗口多显示「样本不足」——但每只票的逐笔收益照常可见。
-> A 股约 5500 只逐日回放较慢（分钟级），建议在服务器上跑。
+> A 股约 5500 只逐日回放较慢（分钟级），只想看某一个策略时用 `--market`/`--strategy`
+> 缩小范围会快很多：`--market` 指定市场（ETF/CN/US），`--strategy` 按类名子串筛选
+> （不区分大小写，如 `rps`、`breakout`），两者可组合。
 
 ## 配置项（.env）
 

@@ -82,6 +82,14 @@ def capped_engine_db(engine, daily_table: str):
                 pass
 
 
+def filter_strategies(strategies: list, strategy: str | None) -> list:
+    """按类名子串（不区分大小写）筛选策略实例；``strategy`` 为空则原样返回。"""
+    if not strategy:
+        return strategies
+    needle = strategy.lower()
+    return [s for s in strategies if needle in type(s).__name__.lower()]
+
+
 def replay_market(
     engine,
     strategies: list,
@@ -142,15 +150,33 @@ def replay_market(
     return total
 
 
-def replay_summary(analytics_engine: AnalyticsEngine) -> list[dict]:
+def replay_summary(
+    analytics_engine: AnalyticsEngine,
+    market: str | None = None,
+    strategy: str | None = None,
+) -> list[dict]:
     """汇总各 (市场, 策略, 持有期) 已定盘信号的收益，供回放后即时查看。
 
     与评分卡不同，这里不设最小样本门槛——即使样本很少也直接展示逐笔平均收益、
     胜率与平均超额，方便短窗口回放后立刻看到「每种策略的收益率」。
+
+    Args:
+        analytics_engine: 绩效分析库引擎。
+        market: 只汇总该市场（'ETF'/'CN'/'US'）；``None`` 则全部。
+        strategy: 只汇总类名包含该子串的策略（不区分大小写）；``None`` 则全部。
     """
+    where = ["e.status = 'closed'"]
+    params: list = []
+    if market:
+        where.append("s.market = ?")
+        params.append(market)
+    if strategy:
+        where.append("LOWER(s.strategy) LIKE ?")
+        params.append(f"%{strategy.lower()}%")
+    where_sql = " AND ".join(where)
     with analytics_engine.connect() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT s.market, s.strategy, e.horizon_days,
                    COUNT(*)                                          AS n,
                    AVG(e.ret)                                        AS avg_ret,
@@ -158,10 +184,11 @@ def replay_summary(analytics_engine: AnalyticsEngine) -> list[dict]:
                    AVG(e.excess_ret)                                 AS avg_excess
             FROM strategy_signal s
             JOIN signal_evaluation e ON s.id = e.signal_id
-            WHERE e.status = 'closed'
+            WHERE {where_sql}
             GROUP BY s.market, s.strategy, e.horizon_days
             ORDER BY s.market, s.strategy, e.horizon_days
-            """
+            """,  # noqa: S608
+            params,
         ).fetchall()
     cols = ["market", "strategy", "horizon_days", "n", "avg_ret", "win_rate", "avg_excess"]
     return [dict(zip(cols, row)) for row in rows]
