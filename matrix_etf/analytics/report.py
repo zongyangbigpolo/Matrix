@@ -71,9 +71,9 @@ def format_scorecard_line(card: dict | None) -> str | None:
     n = card.get("sample_size")
 
     return (
-        f"📊 该策略近{window}日战绩：年化 {ann} | 超额 {excess} | "
+        f"📊 前向信号跟踪（非实盘）近{window}日：年化 {ann} | 超额 {excess} | "
         f"胜率 {win_txt} | 夏普 {sharpe} | 评分 {score_txt}\n"
-        f"（基于 {n} 条历史信号的真实兑现收益）"
+        f"（基于 {n} 条已记录信号的行情兑现，不代表实盘成交）"
     )
 
 
@@ -86,7 +86,23 @@ def build_perf_line(
     """一步获取某策略最近战绩文案；任何异常都吞掉返回 None。"""
     try:
         card = get_latest_scorecard(analytics_engine, market, strategy, window_days)
-        return format_scorecard_line(card)
+        forward = format_scorecard_line(card)
+        with analytics_engine.connect() as conn:
+            row = conn.execute(
+                """SELECT r.total_return, r.status, r.trade_count, b.start_date, b.end_date
+                   FROM backtest_result r JOIN backtest_run b ON b.run_id = r.run_id
+                   WHERE r.market = ? AND r.strategy = ?
+                   ORDER BY b.updated_at DESC, b.run_id DESC LIMIT 1""",
+                (market, strategy),
+            ).fetchone()
+        historical = None
+        if row:
+            ret, status, count, start, end = row
+            historical = (
+                f"🧪 历史组合回测（模拟，非实盘）{start or '—'}~{end or '—'}："
+                f"总收益 {_fmt_pct(ret)} | {count} 笔开仓 | {status}"
+            )
+        return "\n".join(line for line in (forward, historical) if line) or None
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"战绩文案生成失败：{exc}")
         return None

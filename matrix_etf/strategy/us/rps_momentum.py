@@ -6,6 +6,7 @@ import pandas as pd
 
 from matrix_etf.core.logger import get_logger
 from matrix_etf.strategy.base import BaseStrategy
+from matrix_etf.strategy.history import iter_stock_histories
 
 logger = get_logger(__name__)
 
@@ -13,7 +14,7 @@ logger = get_logger(__name__)
 class UsRpsMomentumStrategy(BaseStrategy):
     """美股相对强度动量策略（欧奈尔 RPS 思路）。
 
-    一次性读取全市场日 K 做横截面排位（不逐只遍历）：
+    流式读取全市场日 K，只将各标的最新指标用于横截面排位：
 
     1. 计算每只美股近 ``us_rps_period`` 个交易日涨幅，横截面百分位排名得 RPS。
     2. 保留 ``RPS >= us_rps_threshold`` 的强势股。
@@ -51,35 +52,29 @@ class UsRpsMomentumStrategy(BaseStrategy):
                 cutoff = (
                     pd.Timestamp(latest_str) - pd.Timedelta(days=lookback_days)
                 ).strftime("%Y-%m-%d")
-                df = pd.read_sql(
-                    "SELECT symbol, date, close, volume FROM stock_daily "
-                    "WHERE date >= ?",
-                    conn,
-                    params=[cutoff],
-                )
+                records = []
+                for symbol, frame in iter_stock_histories(conn, cutoff):
+                    if frame["date"].iloc[-1] != latest_str or len(frame) <= period:
+                        continue
+                    close = frame["close"]
+                    base = close.iloc[-1 - period]
+                    ret = (close.iloc[-1] - base) / base
+                    records.append({
+                        "symbol": symbol,
+                        "close": close.iloc[-1],
+                        "pct_change": ret,
+                        "ma50": close.rolling(50, min_periods=50).mean().iloc[-1],
+                        "dollar_vol20": (close * frame["volume"]).rolling(
+                            20, min_periods=20
+                        ).mean().iloc[-1],
+                    })
         except Exception as exc:  # noqa: BLE001
             logger.error(f"读取美股数据库失败：{exc}")
             return []
 
-        if df.empty:
+        if not records:
             return []
-
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.sort_values(["symbol", "date"])
-        df["dollar_volume"] = df["close"] * df["volume"]
-
-        grp = df.groupby("symbol")
-        df["close_shift"] = grp["close"].shift(period)
-        df["pct_change"] = (df["close"] - df["close_shift"]) / df["close_shift"]
-        df["ma50"] = grp["close"].transform(
-            lambda s: s.rolling(50, min_periods=50).mean()
-        )
-        df["dollar_vol20"] = grp["dollar_volume"].transform(
-            lambda s: s.rolling(20, min_periods=20).mean()
-        )
-
-        latest_date = df["date"].max()
-        latest = df[df["date"] == latest_date].dropna(subset=["pct_change"]).copy()
+        latest = pd.DataFrame(records).dropna(subset=["pct_change"])
         if latest.empty:
             return []
 

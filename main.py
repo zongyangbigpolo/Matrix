@@ -32,6 +32,7 @@ from matrix_etf.data.engine import DataEngine  # noqa: E402
 from matrix_etf.data.sync_runner import sync_until_stable  # noqa: E402
 from matrix_etf.notify.feishu import FeishuNotifier  # noqa: E402
 from matrix_etf.strategy.base import BaseStrategy  # noqa: E402
+from matrix_etf.strategy.ranking import select_recommendations  # noqa: E402
 from matrix_etf.strategy.etf.breakout_volume import BreakoutVolumeStrategy  # noqa: E402
 from matrix_etf.strategy.etf.etf_pool import EtfPoolReport  # noqa: E402
 from matrix_etf.strategy.etf.mean_reversion import MeanReversionStrategy  # noqa: E402
@@ -208,13 +209,17 @@ def main() -> None:
         strategies: list[BaseStrategy] = build_strategies(engine, settings)
         analytics = AnalyticsHook(settings, market="ETF")
 
+        candidates = []
         for strategy in strategies:
             strategy_name = type(strategy).__name__
             logger.info(f"执行策略：{strategy_name}")
-
-            selected: list[str] = strategy.run()
-            logger.info(f"{strategy_name} 选出 {len(selected)} 只 ETF")
-
+            candidates.append(strategy.run())
+        recommendations = select_recommendations(
+            engine, candidates, settings.recommendation_limit
+        )
+        for strategy, selected in zip(strategies, recommendations):
+            strategy_name = type(strategy).__name__
+            logger.info(f"{strategy_name} 择优保留 {len(selected)} 只 ETF")
             if selected:
                 perf_line = analytics.record_and_perf_line(strategy, selected)
                 notifier.send(

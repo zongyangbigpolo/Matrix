@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     us_start_date: str = "2020-01-01"
 
     # 策略参数
+    recommendation_limit: int = Field(default=10, ge=1, le=10)
     liquidity_min_amount: float = 50_000_000.0
     rps_period: int = 120
     rps_threshold: float = 90.0
@@ -85,7 +86,7 @@ class Settings(BaseSettings):
     sync_persist_min_coverage: float = 0.5  # 覆盖率收敛后仍可接受的最低下限
 
     # —— 绩效分析与回测（analytics 模块，完全独立的库与流水线）——
-    # 详见 docs/analytics.md。前向跟踪腿轻量，可上服务器每日跑；vectorbt 回测腿离线。
+    # 详见 docs/analytics.md。每日前向跟踪，独立的本地行情组合回测按需或每周运行。
     analytics_enabled: bool = True
     analytics_db_path: str = "data/matrix_analytics.db"
     # 前向兑现收益评估的持有期（交易日口径），策略建议持有天数须落在其中之一
