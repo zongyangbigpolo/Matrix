@@ -16,11 +16,12 @@
 的行，一次拷贝 + 若干次轻量删除即可，内存友好（副本落盘，逐只读取不整表载入）。
 """
 
+import logging
 import os
-import shutil
 import sqlite3
 import tempfile
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+from pathlib import Path
 
 from matrix_etf.analytics.db import AnalyticsEngine
 from matrix_etf.analytics.signals import SignalStore
@@ -37,9 +38,42 @@ MARKET_TABLES: dict[str, tuple[str, str]] = {
 }
 
 
+def run_strategy_checked(strategy):
+    """Promote logged, internally swallowed calculation failures to explicit errors.
+
+    Production strategies intentionally tolerate per-symbol exceptions in live runs.
+    Historical performance must not silently treat those failures as no-signal days.
+    """
+    messages = []
+
+    class CaptureFailures(logging.Handler):
+        def emit(self, record):
+            if record.levelno >= logging.WARNING and len(messages) < 10:
+                messages.append(record.getMessage())
+
+    strategy_logger = logging.getLogger(type(strategy).__module__)
+    handler = CaptureFailures()
+    strategy_logger.addHandler(handler)
+    try:
+        picks = strategy.run()
+    finally:
+        strategy_logger.removeHandler(handler)
+    if messages:
+        raise RuntimeError("Strategy logged calculation warnings/errors: " + "; ".join(messages))
+    if not isinstance(picks, list) or any(not isinstance(symbol, str) for symbol in picks):
+        raise TypeError("run() must return list[str]")
+    return picks
+
+
 def get_as_of_dates(db_path: str, daily_table: str, days: int) -> list[str]:
     """返回日 K 表中最近 ``days`` 个交易日（升序），作为回放的 as-of 日期。"""
-    with sqlite3.connect(db_path) as conn:
+    if daily_table not in {tables[0] for tables in MARKET_TABLES.values()}:
+        raise ValueError(f"Unknown daily table: {daily_table}")
+    if days < 1:
+        raise ValueError("days must be positive")
+    if not Path(db_path).is_file():
+        raise FileNotFoundError(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute(
             f"SELECT DISTINCT date FROM {daily_table} ORDER BY date DESC LIMIT ?",  # noqa: S608
             (days,),
@@ -47,13 +81,26 @@ def get_as_of_dates(db_path: str, daily_table: str, days: int) -> list[str]:
     return sorted(row[0] for row in rows if row[0])
 
 
-def _shrink_to(db_path: str, daily_table: str, as_of: str) -> None:
+def _shrink_to(db_path: str, daily_table: str, as_of: str, symbols=None) -> None:
     """把封顶库裁剪到 ``date <= as_of``（删除更晚的日 K）。"""
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            f"DELETE FROM {daily_table} WHERE date > ?",  # noqa: S608
-            (as_of,),
-        )
+    with closing(sqlite3.connect(db_path)) as conn:
+        if symbols is None:
+            conn.execute(
+                f"DELETE FROM {daily_table} WHERE date > ?",  # noqa: S608
+                (as_of,),
+            )
+        else:
+            # Production stores index (symbol, date), not date alone. Indexed seeks
+            # avoid rescanning a multi-GB table for every historical date.
+            conn.executemany(
+                f"DELETE FROM {daily_table} WHERE symbol=? AND date>?",
+                ((symbol, as_of) for symbol in symbols),
+            )
+        # This cache contains only today's snapshot, not historical observations.
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='etf_metrics'"
+        ).fetchone():
+            conn.execute("DELETE FROM etf_metrics")
         conn.commit()
 
 
@@ -68,10 +115,15 @@ def capped_engine_db(engine, daily_table: str):
     tmp_dir = os.path.dirname(os.path.abspath(src)) or "."
     fd, tmp_path = tempfile.mkstemp(prefix="replay_", suffix=".db", dir=tmp_dir)
     os.close(fd)
-    shutil.copyfile(src, tmp_path)
     original = engine.db_path
-    engine.db_path = tmp_path
     try:
+        # SQLite backup includes committed WAL pages and provides a consistent snapshot.
+        with closing(sqlite3.connect(
+            Path(src).resolve().as_uri() + "?mode=ro", uri=True
+        )) as source:
+            with closing(sqlite3.connect(tmp_path)) as target:
+                source.backup(target)
+        engine.db_path = tmp_path
         yield tmp_path
     finally:
         engine.db_path = original
@@ -96,6 +148,8 @@ def replay_market(
     market: str,
     signal_store: SignalStore,
     days: int,
+    recommendation_limit: int = 10,
+    strategy_filter: str | None = None,
 ) -> int:
     """回放单个市场最近 ``days`` 个交易日的选股，落库为历史信号。
 
@@ -111,13 +165,11 @@ def replay_market(
     """
     daily_table, _ = MARKET_TABLES.get(market, (None, None))
     if daily_table is None:
-        logger.warning(f"未知市场 {market}，跳过回放。")
-        return 0
+        raise ValueError(f"Unknown market: {market}")
 
     as_of_dates = get_as_of_dates(engine.db_path, daily_table, days)
     if not as_of_dates:
-        logger.warning(f"[{market}] 行情库无数据，跳过回放。")
-        return 0
+        raise ValueError(f"[{market}] No local market data")
 
     logger.info(
         f"[{market}] 开始历史回放：{len(as_of_dates)} 个交易日 "
@@ -129,13 +181,15 @@ def replay_market(
         # 从最新回放日往旧走，配合 DELETE 增量裁剪封顶库（一次拷贝 + 多次轻量删除）。
         for as_of in sorted(as_of_dates, reverse=True):
             _shrink_to(tmp_path, daily_table, as_of)
-            for strategy in strategies:
-                name = type(strategy).__name__
-                try:
-                    picks = strategy.run()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(f"[{market}/{name}] 回放 {as_of} 选股失败，跳过：{exc}")
+            from matrix_etf.strategy.ranking import select_recommendations
+
+            candidates = [run_strategy_checked(strategy) for strategy in strategies]
+            ranked = select_recommendations(engine, candidates, limit=recommendation_limit)
+            selected = filter_strategies(strategies, strategy_filter)
+            for strategy, picks in zip(strategies, ranked):
+                if strategy not in selected:
                     continue
+                name = type(strategy).__name__
                 if not picks:
                     continue
                 total += signal_store.record(

@@ -7,16 +7,16 @@
   python analytics_main.py --evaluate        # 前向：同步基准 + 兑现收益 + 评分卡（每日）
   python analytics_main.py --sync-benchmark  # 仅更新基准行情缓存
   python analytics_main.py --report          # 打印各策略最新评分卡（人工查看）
-  python analytics_main.py --replay --days 20  # 历史回放：无前视偏差重建过去N个交易日
-                                               # 的选股信号并即时评估各策略收益
-
-历史回测（vectorbt）为离线增强，见 docs/analytics.md 第 12 节，暂不在此入口提供。
+  python analytics_main.py --replay --days 20  # --backtest 的兼容别名
+  python analytics_main.py --backtest --days 252  # 离线资金约束组合回测（独立存储）
 """
 
 import argparse
 import os
+import signal
 import socket
 import sys
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -28,32 +28,43 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 socket.setdefaulttimeout(30.0)
 
+from matrix_etf.analytics.backtest import (  # noqa: E402
+    BacktestConfig,
+    backtest_market,
+    format_backtest_report,
+)
 from matrix_etf.analytics.benchmark import BenchmarkStore  # noqa: E402
 from matrix_etf.analytics.db import AnalyticsEngine  # noqa: E402
 from matrix_etf.analytics.forward import ForwardEvaluator  # noqa: E402
-from matrix_etf.analytics.replay import (  # noqa: E402
-    filter_strategies,
-    format_summary,
-    replay_market,
-    replay_summary,
-)
 from matrix_etf.analytics.report import format_scorecard_line, get_latest_scorecard  # noqa: E402
 from matrix_etf.analytics.scorecard import ScorecardBuilder  # noqa: E402
 from matrix_etf.analytics.signals import SignalStore  # noqa: E402
-from matrix_etf.core.config import get_settings  # noqa: E402
+from matrix_etf.core.config import Settings, get_settings  # noqa: E402
 from matrix_etf.core.logger import get_logger  # noqa: E402
 from matrix_etf.data.engine import DataEngine  # noqa: E402
 from matrix_etf.data.stock_engine import StockDataEngine  # noqa: E402
 from matrix_etf.data.us_stock_engine import UsStockDataEngine  # noqa: E402
 
 
-def _build_market_engines(settings) -> dict[str, object]:
+def _build_market_engines(settings, offline=False) -> dict[str, object]:
     """按市场装配行情引擎（只读用于计算兑现收益）。"""
-    return {
-        "ETF": DataEngine(settings),
-        "CN": StockDataEngine(settings),
-        "US": UsStockDataEngine(settings),
-    }
+    engines = {}
+    for market, engine_type in (
+        ("ETF", DataEngine), ("CN", StockDataEngine), ("US", UsStockDataEngine)
+    ):
+        if offline:
+            class OfflineEngine(engine_type):
+                def _init_db(self):
+                    # Do not create or migrate source databases during a historical run.
+                    pass
+
+                def _client(self):
+                    raise RuntimeError("Network clients are disabled during offline backtests")
+
+            engines[market] = OfflineEngine(settings)
+        else:
+            engines[market] = engine_type(settings)
+    return engines
 
 
 def _build_market_strategies(engines: dict[str, object], settings) -> dict[str, list]:
@@ -73,6 +84,21 @@ def _build_market_strategies(engines: dict[str, object], settings) -> dict[str, 
 def _sync_benchmarks(benchmark_store: BenchmarkStore, settings, logger) -> None:
     for benchmark in {settings.benchmark_cn, settings.benchmark_us}:
         benchmark_store.sync(benchmark)
+
+
+@contextmanager
+def _backtest_termination():
+    """Let service timeouts unwind snapshot/price-store context managers."""
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def terminate(signum, frame):
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, terminate)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def _run_evaluate(settings, logger) -> None:
@@ -101,58 +127,42 @@ def _run_replay(
     market: str | None = None,
     strategy: str | None = None,
 ) -> None:
-    """历史回放：无前视偏差重建过去 ``days`` 个交易日的选股信号，随后评估并汇总收益。
+    """Compatibility alias; historical runs no longer write into live signal tables."""
+    logger.warning("--replay 现为 --backtest 别名；历史模拟不再写入前向信号台账。")
+    _run_backtest(settings, logger, days, market, strategy)
 
-    Args:
-        market: 只回放该市场（'ETF'/'CN'/'US'）；``None`` 则三个市场全跑。
-        strategy: 只回放类名包含该子串的策略（不区分大小写）；``None`` 则全部策略。
-    """
+
+def _run_backtest(settings, logger, days, market=None, strategy=None, config=None):
     analytics = AnalyticsEngine(settings)
-    signal_store = SignalStore(analytics)
-    benchmark_store = BenchmarkStore(analytics, settings)
-
-    logger.info(f"装配各市场行情引擎与策略（回放窗口 {days} 个交易日）...")
-    engines = _build_market_engines(settings)
-    strategies_by_market = _build_market_strategies(engines, settings)
-
-    if market:
-        market = market.upper()
-        if market not in engines:
-            logger.error(f"未知市场 {market}，可选：{', '.join(engines)}。")
-            return
-        engines = {market: engines[market]}
-
-    logger.info("开始逐市场历史回放（无前视偏差重建信号）...")
-    total = 0
-    for mkt, engine in engines.items():
-        picks_strategies = filter_strategies(strategies_by_market[mkt], strategy)
-        if not picks_strategies:
-            logger.warning(f"[{mkt}] 无策略匹配 --strategy={strategy!r}，跳过。")
-            continue
-        logger.info(
-            f"[{mkt}] 本次回放 {len(picks_strategies)} 个策略："
-            f"{', '.join(type(s).__name__ for s in picks_strategies)}"
-        )
-        total += replay_market(engine, picks_strategies, mkt, signal_store, days)
-    logger.info(f"历史回放完成，累计新增信号 {total} 条。")
-
-    logger.info("同步基准行情缓存...")
-    _sync_benchmarks(benchmark_store, settings, logger)
-
-    logger.info("推进前向兑现收益评估（用真实库读回放日之后的价格）...")
-    evaluator = ForwardEvaluator(analytics, signal_store, benchmark_store, engines, settings)
-    evaluator.evaluate(date.today().isoformat())
-
-    logger.info("构建策略评分卡...")
-    ScorecardBuilder(analytics, settings).build_all(date.today().isoformat())
-
-    print("\n===== 历史回放：各策略兑现收益汇总（逐笔等权，不设最小样本门槛）=====")
-    print(format_summary(replay_summary(analytics, market=market, strategy=strategy)))
-    print(
-        "\n提示：持有期未到期的信号记为 open、暂不计入上表；"
-        "综合评分需样本≥"
-        f"{settings.analytics_min_samples} 才给分，短窗口回放多为「样本不足」。\n"
+    config = config or BacktestConfig(
+        recommendation_limit=getattr(settings, "recommendation_limit", 10)
     )
+    engines = _build_market_engines(settings, offline=True)
+    strategies_by_market = _build_market_strategies(engines, settings)
+    selected_markets = [market.upper()] if market else list(engines)
+    if any(mkt not in engines for mkt in selected_markets):
+        raise ValueError(f"Unknown market: {market}")
+    if strategy and not any(
+        strategy.lower() in type(s).__name__.lower()
+        for mkt in selected_markets for s in strategies_by_market[mkt]
+    ):
+        raise ValueError(f"No strategy matches {strategy!r}")
+    failed = []
+    report_dir = Path(settings.analytics_db_path).parent / "backtests"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    for mkt in selected_markets:
+        logger.info(f"[{mkt}] 离线组合回测：{days} 个交易日，全部策略参与历史排序")
+        run = backtest_market(
+            engines[mkt], strategies_by_market[mkt], mkt, analytics, days, config
+        )
+        output = report_dir / f"{mkt}-{run['run_id']}.md"
+        output.write_text(run["report"], encoding="utf-8")
+        print(format_backtest_report(run["results"], mkt, run["run_id"], strategy))
+        print(f"\n完整报告：{output}\n")
+        if any(r["status"] in {"error", "no_data"} for r in run["results"].values()):
+            failed.append(mkt)
+    if failed:
+        raise RuntimeError(f"Backtest failed for {', '.join(failed)}; see persisted ERROR reports")
 
 
 def _run_report(settings, logger) -> None:
@@ -161,10 +171,19 @@ def _run_report(settings, logger) -> None:
         pairs = conn.execute(
             "SELECT DISTINCT market, strategy FROM strategy_signal ORDER BY market, strategy"
         ).fetchall()
+        historical = conn.execute(
+            """SELECT report FROM backtest_run r
+               WHERE run_id = (SELECT run_id FROM backtest_run x WHERE x.market = r.market
+                               ORDER BY updated_at DESC, run_id DESC LIMIT 1)
+               ORDER BY market"""
+        ).fetchall()
+    for (report,) in historical:
+        print(report)
     window = settings.get_analytics_windows()[0]
     if not pairs:
         logger.info("暂无任何信号记录，评分卡为空。")
         return
+    print("\n===== 前向信号跟踪（非实盘账户收益）=====")
     for market, strategy in pairs:
         card = get_latest_scorecard(analytics, market, strategy, window)
         line = format_scorecard_line(card)
@@ -193,40 +212,63 @@ def main() -> None:
     parser.add_argument(
         "--replay",
         action="store_true",
-        help="历史回放：无前视偏差重建过去 N 个交易日的选股信号并即时评估各策略收益",
+        help="兼容别名：等价于 --backtest，不写入实盘信号台账",
+    )
+    parser.add_argument(
+        "--backtest",
+        action="store_true",
+        help="离线组合回测：所有策略历史选股、资金约束、成本和期末估值，独立存储",
     )
     parser.add_argument(
         "--days",
         type=int,
-        default=20,
-        help="--replay 回放的交易日数（默认 20）",
+        default=60,
+        help="--backtest/--replay 的交易日数（默认 60；长样本可设 252，耗时更长）",
     )
     parser.add_argument(
         "--market",
         choices=["ETF", "CN", "US", "etf", "cn", "us"],
         default=None,
-        help="--replay 只回放指定市场（ETF/CN/US），缺省则三个市场全跑",
+        help="--backtest 只回测指定市场（ETF/CN/US），缺省则三个市场全跑",
     )
     parser.add_argument(
         "--strategy",
         default=None,
-        help="--replay 只回放类名包含该子串的策略（不区分大小写，如 rps、breakout）",
+        help="--backtest 只展示匹配类名的策略；排序与存储仍包含市场全部策略",
     )
+    parser.add_argument("--initial-capital", type=float, default=100_000)
+    parser.add_argument("--max-positions", type=int, default=10)
+    parser.add_argument("--commission-bps", type=float, default=5)
+    parser.add_argument("--slippage-bps", type=float, default=5)
     args = parser.parse_args()
 
     try:
-        settings = get_settings()
+        # Offline simulation/reporting does not require a notification webhook.
+        settings = (
+            Settings(feishu_webhook_url="")
+            if args.backtest or args.replay or args.report else get_settings()
+        )
         logger = get_logger(__name__)
         logger.info("Matrix 绩效分析启动")
 
-        if args.replay:
-            _run_replay(
-                settings,
-                logger,
-                max(1, args.days),
-                market=args.market,
-                strategy=args.strategy,
-            )
+        if args.backtest or args.replay:
+            if args.days < 1:
+                raise ValueError("--days must be positive")
+            if args.replay:
+                logger.warning("--replay 已切换为独立的组合回测，不写入前向台账")
+            with _backtest_termination():
+                _run_backtest(
+                    settings,
+                    logger,
+                    args.days,
+                    market=args.market,
+                    strategy=args.strategy,
+                    config=BacktestConfig(
+                        initial_capital=args.initial_capital, max_positions=args.max_positions,
+                        commission_bps=args.commission_bps, slippage_bps=args.slippage_bps,
+                        recommendation_limit=getattr(settings, "recommendation_limit", 10),
+                    ),
+                )
         elif args.sync_benchmark:
             analytics = AnalyticsEngine(settings)
             _sync_benchmarks(BenchmarkStore(analytics, settings), settings, logger)

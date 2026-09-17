@@ -6,6 +6,7 @@ import pandas as pd
 
 from matrix_etf.core.logger import get_logger
 from matrix_etf.strategy.base import BaseStrategy
+from matrix_etf.strategy.history import iter_stock_histories
 
 logger = get_logger(__name__)
 
@@ -13,7 +14,7 @@ logger = get_logger(__name__)
 class RpsBreakoutStrategy(BaseStrategy):
     """RPS 极强动量突破策略。
 
-    与逐只遍历的策略不同，本策略一次性读取全市场日 K 做横截面排位：
+    本策略流式读取各股票日 K，以最新指标做全市场横截面排位：
     1. 计算每只股票近 ``stock_rps_period`` 个交易日的涨幅。
     2. 横截面按涨幅百分位排名得到 RPS，取 RPS >= ``stock_rps_threshold`` 的强势股。
     3. 在强势股中保留今日 close >= 阶段滚动最高价 × 0.90 的突破标的。
@@ -44,37 +45,27 @@ class RpsBreakoutStrategy(BaseStrategy):
                 cutoff = (
                     pd.Timestamp(latest_str) - pd.Timedelta(days=lookback_days)
                 ).strftime("%Y-%m-%d")
-                df = pd.read_sql(
-                    "SELECT symbol, date, close, high FROM stock_daily "
-                    "WHERE date >= ?",
-                    conn,
-                    params=[cutoff],
-                )
+                records = []
+                for symbol, frame in iter_stock_histories(conn, cutoff):
+                    if frame["date"].iloc[-1] != latest_str or len(frame) <= period:
+                        continue
+                    close = frame["close"]
+                    base = close.iloc[-1 - period]
+                    records.append({
+                        "symbol": symbol,
+                        "close": close.iloc[-1],
+                        "pct_change": (close.iloc[-1] - base) / base,
+                        "roll_high": frame["high"].rolling(
+                            period, min_periods=period // 2
+                        ).max().iloc[-1],
+                    })
         except Exception as exc:  # noqa: BLE001
             logger.error(f"读取股票数据库失败：{exc}")
             return []
 
-        if df.empty:
+        if not records:
             return []
-
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.sort_values(["symbol", "date"])
-
-        # 纵向：区间涨幅
-        df["close_shift"] = df.groupby("symbol")["close"].shift(period)
-        df["pct_change"] = (df["close"] - df["close_shift"]) / df["close_shift"]
-
-        # 纵向：阶段滚动最高价
-        df["roll_high"] = (
-            df.groupby("symbol")["high"]
-            .rolling(window=period, min_periods=period // 2)
-            .max()
-            .reset_index(level=0, drop=True)
-        )
-
-        latest_date = df["date"].max()
-        latest = df[df["date"] == latest_date].copy()
-        latest = latest.dropna(subset=["pct_change"])
+        latest = pd.DataFrame(records).dropna(subset=["pct_change"])
         if latest.empty:
             return []
 

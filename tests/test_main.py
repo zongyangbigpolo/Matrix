@@ -97,6 +97,8 @@ def test_main_runs_strategies_on_sync_success(monkeypatch) -> None:
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
 
     fake_engine = MagicMock()
+    from tests.test_ranking import history
+    fake_engine.get_ohlcv.return_value = history()
     fake_engine.sync_universe_and_get_symbols.return_value = ["510300.SH"]
     fake_engine.get_local_symbols.return_value = ["510300.SH"]
     monkeypatch.setattr(main_module, "DataEngine", lambda *a, **k: fake_engine)

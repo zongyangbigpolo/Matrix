@@ -286,6 +286,8 @@ def test_format_scorecard_line():
         "composite_score": 72.0,
     }
     line = format_scorecard_line(card)
+    assert "前向信号跟踪（非实盘）" in line
+    assert "不代表实盘成交" in line
     assert "年化 +18.4%" in line
     assert "超额 +6.1%" in line
     assert "胜率 58%" in line
@@ -464,8 +466,12 @@ def test_replay_no_lookahead_records_backdated_signals():
         # 构造两只标的：AAA 先高后崩，BBB 稳步走高。
         # 早期（可见数据少）AAA 最后收盘更高 → 应选 AAA；
         # 后期 AAA 已崩、BBB 更高 → 应选 BBB。若泄漏未来数据，早期也会误选 BBB。
-        aaa = build_prices("AAA", "2026-06-01", [100, 130, 160, 120, 90, 70, 60, 55, 50, 48])
-        bbb = build_prices("BBB", "2026-06-01", [100, 101, 102, 103, 104, 108, 112, 118, 125, 132])
+        # Shared ranking needs 21 as-of closes; warm-up precedes the replay window.
+        aaa = build_prices("AAA", "2026-05-01", [100] * 21 + [100, 130, 160, 120, 90, 70, 60, 55, 50, 48])
+        bbb = build_prices("BBB", "2026-05-01", [100] * 21 + [100, 101, 102, 103, 104, 108, 112, 118, 125, 132])
+        for frame in (aaa, bbb):
+            frame["volume"] = 100_000
+            frame["amount"] = 10_000_000
         db = str(Path(tmp) / "mkt.db")
         _write_market_db(db, [aaa, bbb])
 

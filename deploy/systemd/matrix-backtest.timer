@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh Matrix strategy portfolio returns weekly
+
+[Timer]
+OnCalendar=Sun 04:00:00
+Persistent=true
+Unit=matrix-backtest.service
+
+[Install]
+WantedBy=timers.target

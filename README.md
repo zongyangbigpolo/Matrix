@@ -140,26 +140,36 @@ python main.py --backfill
 评分卡（年化 / 超额 / 回撤 / 胜率 / 夏普 / Sortino / 0–100 综合评分），并在后续推送
 卡片时附上该策略历史战绩。设计与公式详见 [`docs/analytics.md`](docs/analytics.md)。
 
+每日推送先汇总同一市场的全部策略候选，再择优保留 **最多 10 个不同标的**。
+ETF、A 股、美股独立限额；同一标的命中多个策略时仍保留各策略归属，但不重复占名额。
+`RECOMMENDATION_LIMIT` 可设为 1～10。最终推送与信号台账使用相同名单。
+评分对候选池各指标做百分位标准化，再按 **40% 近 20 日收益/波动率 + 20% 近 20 日
+最大回撤（越小越好）+ 20% 平均成交额 + 20% 策略共识数** 加权；同分按代码排序。
+美股成交额使用收盘价×成交量估算；不足 21 根有效日线、无流动性或数据异常者不推荐。
+该评分是可解释的筛选规则，不代表收益保证，也不根据未来回测成绩择股。
+
 | 命令 | 说明 |
 |------|------|
 | `python analytics_main.py --evaluate` | 前向评估：同步基准 + 兑现收益 + 评分卡（每日运行，默认模式） |
 | `python analytics_main.py --sync-benchmark` | 仅更新基准行情缓存（沪深300 / 标普500） |
 | `python analytics_main.py --report` | 打印各策略最新评分卡 |
-| `python analytics_main.py --replay --days 20` | 历史回放：无前视偏差重建过去 20 个交易日的选股信号，随后即时评估并打印各策略兑现收益 |
-| `python analytics_main.py --replay --market ETF` | 只回放 ETF 市场（避开 A 股 5500 只，秒级出结果） |
-| `python analytics_main.py --replay --market CN --strategy rps` | 只回放 A 股里类名含 `rps` 的单个策略 |
+| `python analytics_main.py --backtest --days 60` | 离线回测全部 17 种策略，保存组合总收益与净值（不需要联网） |
+| `python analytics_main.py --replay --days 20` | `--backtest` 的兼容别名：模拟最近 20 个交易日的组合，不再写入日常信号台账 |
+| `python analytics_main.py --backtest --market ETF` | 只回测 ETF 市场 |
+| `python analytics_main.py --backtest --market CN --strategy rps` | 回测 A 股，报告类名含 `rps` 的策略 |
 
 > 信号落库由三条选股线自动完成（每次推送前的容错 hook），无需手动操作；
-> `analytics_main.py` 只负责随后计算收益与评分。vectorbt 历史回测为离线增强，
-> 不在服务器定时器中运行。
+> `--backtest` 独立记录模拟组合净值，不混入日常信号台账；`--report` 可查看已保存的回测。
+> 它计算有限本金下的组合总收益；旧版 `--replay` 的逐笔平均收益不是组合总收益。
+> 完整交易口径与数据局限见 [`docs/analytics.md`](docs/analytics.md)。
 >
-> **想立刻看到历史收益**（而非等每天积累）时用 `--replay`：它让每个策略「回到过去
-> 某个交易日」只用当日及以前的数据重新选一次股，据此补齐历史信号再评估，**杜绝前视
-> 偏差**。注意持有期为 5/10/20/60 交易日，短窗口回放里只有较早日期的 5 日档能闭合，
-> 且综合评分需样本≥10，短窗口多显示「样本不足」——但每只票的逐笔收益照常可见。
-> A 股约 5500 只逐日回放较慢（分钟级），只想看某一个策略时用 `--market`/`--strategy`
-> 缩小范围会快很多：`--market` 指定市场（ETF/CN/US），`--strategy` 按类名子串筛选
-> （不区分大小写，如 `rps`、`breakout`），两者可组合。
+> **无需等日常信号积累**：`--backtest` 让策略只读取历史当日及之前的数据，按次日开盘价
+> 模拟买入、建议持有期模拟卖出，计入手续费、滑点和资金占用，展示总收益、年化与最大回撤。
+> 无信号的策略也列入报告，数据不足会明确标注，不用逐笔收益连乘冒充组合总收益。
+> `--market` 指定市场，`--strategy` 按类名子串筛选报告；为保持与每日推荐一致，
+> 同一市场仍运行全部策略再联合择优，不因只查看一个策略而改变候选池。
+> 大市场长窗口可能耗时数小时，建议用后台服务运行。历史模拟不是实际账户收益，
+> 未复权、停牌、幸存者偏差等数据限制仍需注意，短窗口结果不代表长期表现。
 
 ## 配置项（.env）
 
@@ -174,6 +184,7 @@ python main.py --backfill
 | `STOCK_UNIVERSE` | 否 | `CN_Equity_A` | tickflow A 股标的池 id |
 | `US_DB_PATH` | 否 | `data/matrix_us.db` | 美股线 SQLite 路径（与 ETF / A 股库独立） |
 | `US_UNIVERSE` | 否 | `US_Equity` | tickflow 美股标的池 id（约 1.2 万只） |
+| `RECOMMENDATION_LIMIT` | 否 | `10` | 每个市场每日跨策略不同推荐标的上限（1～10） |
 | `LIQUIDITY_MIN_AMOUNT` | 否 | `50000000` | ETF 流动性门槛：近 20 日平均成交额（元） |
 | `RPS_PERIOD` | 否 | `120` | 动量/RPS 回看天数 |
 | `RPS_THRESHOLD` | 否 | `90` | RPS 百分位阈值 |
@@ -423,8 +434,11 @@ sudo systemctl enable --now matrix-us.timer
 ```bash
 sudo cp /opt/Matrix/deploy/systemd/matrix-analytics.service /etc/systemd/system/
 sudo cp /opt/Matrix/deploy/systemd/matrix-analytics.timer /etc/systemd/system/
+sudo cp /opt/Matrix/deploy/systemd/matrix-backtest.service /etc/systemd/system/
+sudo cp /opt/Matrix/deploy/systemd/matrix-backtest.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now matrix-analytics.timer
+sudo systemctl enable --now matrix-backtest.timer
 ```
 
 查看状态与日志：
@@ -436,12 +450,18 @@ journalctl -u matrix-etf.service -n 100 --no-pager
 journalctl -u matrix-stock.service -n 100 --no-pager
 journalctl -u matrix-us.service -n 100 --no-pager
 journalctl -u matrix-analytics.service -n 100 --no-pager
+journalctl -u matrix-backtest.service -n 100 --no-pager
 ```
 
 ETF 线默认在**周一至周五 19:15**、A 股线在 **20:30**（晚间错开），美股线放到**白天 14:00**
 （中国时区，与晚间 A 股/ETF 彻底错开，避免共享 tickflow 免费档限速额度；此时上一美股交易日
 已完整收盘）运行，`Persistent=true` 会在错过时补跑。绩效分析线在 **21:30** 运行（晚于三条
 选股线，确保当日信号已全部落库、各行情库已同步到最新交易日再评估兑现收益与评分卡）。
+组合回测每周日 **04:00** 离线重算最近 60 个交易日，低优先级运行，最长 12 小时；
+回测服务设置 400 MB 内存上限，股票 RPS 按标的流式计算，避免全市场 DataFrame 占满小内存服务器。
+与绩效评估共用分析锁，避免重复执行。首次安装可手动运行
+`./scripts/run_analytics.sh --backtest --days 20` 先生成短窗口报告，再按需扩大窗口。
+回测不会发送选股通知，也不会改写行情库或日常信号台账。
 由于收盘后各线会「持续拉取直至完成」（默认最长坚持约 3 小时，见 `SYNC_PERSIST_*` 配置），
 systemd service 的 `TimeoutStartSec` 已相应放宽（ETF 4h、A 股 5h、美股 6h、分析线 2h）。
 如需调整时间，编辑对应 `.timer` 的 `OnCalendar` 后 `systemctl daemon-reload`。

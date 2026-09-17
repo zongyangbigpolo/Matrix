@@ -1,0 +1,13 @@
+[Unit]
+Description=Matrix weekly portfolio backtests for all strategies
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/Matrix
+EnvironmentFile=-/opt/Matrix/.env
+ExecStart=/opt/Matrix/scripts/run_analytics.sh --backtest --days 60
+TimeoutStartSec=12h
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=400M
+MemorySwapMax=128M
