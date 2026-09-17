@@ -171,6 +171,58 @@ ETF、A 股、美股独立限额；同一标的命中多个策略时仍保留各
 > 大市场长窗口可能耗时数小时，建议用后台服务运行。历史模拟不是实际账户收益，
 > 未复权、停牌、幸存者偏差等数据限制仍需注意，短窗口结果不代表长期表现。
 
+### 境内美股基金申购监控（`fund_main.py`）
+
+独立查询**天天基金公开渠道**的人民币场外申购状态与日累计限额，免费、无需 API Key，
+不登录交易账户、不自动下单。不代表支付宝、银行、基金公司直销的限额，也不保证实际成交。
+当前目录覆盖纳斯达克100、标普500及标普500等权 **24 个产品、57 类份额**；
+不声称覆盖所有美股主动/行业主题基金，也不混入美元份额或场内 ETF 买卖。
+
+本地仅维护 `config/us_funds.json`：同一产品的 A/C/D 等份额代码为一组，不保存名称、
+净值、费率、额度、昨日快照或新的基金数据库。每次在线查询，最多展示
+`RECOMMENDATION_LIMIT` 个产品（上限10），同产品符合条件的份额合并展示。
+按各组最大单类份额公布上限降序、代码打破同分；**绝不把A/C额度相加**，
+也不根据单一申购费率判断哪类份额最优。点击名称打开对应基金详情页。
+
+仅纳入“开放申购/限大额”且起购金额、日累计上限均明确、满足人民币金额精度的产品。
+**暂停申购优先于残留限额数字**；缺失、零值、超大未解释占位值、未知状态和字段异常
+均列为待核实，不当成“不限额”。完整批次缺失、接口改版、网络失败时告警且退出非零，
+不回退到昨日额度。部分目录代码缺失会在卡片明确标注；全部缺失视为查询失败。
+公开信息可能滞后，卡片查询时间不是公告生效时间；单笔限制、定投例外、跨份额合并规则
+及个人剩余额度并不能由此接口完整获得，最终以交易页面与公告为准。
+
+| 命令 | 说明 |
+|------|------|
+| `python fund_main.py` | 查询并向飞书发送当前申购清单；无可确认产品也明确发送结果 |
+| `python fund_main.py --dry-run` | 在线查询、打印卡片，不推送，不写入动态基金信息 |
+| `python fund_main.py --discover --dry-run` | 对照免费基金名称目录，打印未纳入的候选 |
+| `python fund_main.py --discover` | 仅有新增候选时发待审核卡片；不自动修改批准目录 |
+| `python fund_main.py --catalog config/us_funds.json` | 指定代码目录 |
+
+数据入口是网站使用的免费公开入口，**不是有 SLA 的官方授权开放 API**：
+申购状态使用 `https://fund.eastmoney.com/Data/Fund_JJJZ_Data.aspx`，
+参数 `t=8&page=1,50000&js=reData&sort=fcode,asc`；新增候选使用
+`https://fund.eastmoney.com/js/fundcode_search.js`。仅解析数据，不执行远端 JavaScript；
+限制响应大小、超时和重试，不绕过登录、验证码或访问控制。不依赖 AKShare 或付费服务。
+
+默认复用已有飞书机器人，也可配置 `STRATEGY_WEBHOOK_FUND_US` 指向专属群。
+`FUND_CATALOG_PATH`、`FUND_SOURCE_TIMEOUT_SECONDS`、`FUND_SOURCE_ATTEMPTS` 见 `.env.example`。
+部署到已有 `/opt/Matrix` 后：
+
+```bash
+sudo install -m 644 deploy/systemd/matrix-funds.service deploy/systemd/matrix-funds.timer /etc/systemd/system/
+sudo install -m 644 deploy/systemd/matrix-fund-catalog.service deploy/systemd/matrix-fund-catalog.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now matrix-funds.timer matrix-fund-catalog.timer
+```
+
+每天北京时间 **09:30** 查询并推送，周日 **10:00** 检查新增候选；周末/配置休市日仍查询，
+卡片提醒委托与份额确认可能延后，不能仅根据中国工作日推断 QDII 是否开放。
+新候选只提示核验，不直接加入可申购清单；核实投资范围、币种和份额归组后更新代码目录。
+由于不保留历史额度，**首版不做14点“仅变化补发”或额度涨跌比较**。
+定时器不补跑错过的时点，避免重启后重复推送；两项任务共用独立运行锁，
+各自5分钟超时、192 MB内存和64 MB交换空间上限，不占用策略回测的锁。
+
 ## 配置项（.env）
 
 | 变量 | 必填 | 默认 | 说明 |

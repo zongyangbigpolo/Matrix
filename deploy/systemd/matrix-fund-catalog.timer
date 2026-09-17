@@ -1,0 +1,10 @@
+[Unit]
+Description=Discover new US-index fund catalogue candidates weekly
+
+[Timer]
+OnCalendar=Sun 10:00:00 Asia/Shanghai
+Persistent=false
+Unit=matrix-fund-catalog.service
+
+[Install]
+WantedBy=timers.target

@@ -43,6 +43,7 @@ reports/*.md
 
 # Linux 运行锁
 .matrix_etf.lock
+.matrix_funds.lock
 
 # Hypothesis 测试缓存
 .hypothesis/

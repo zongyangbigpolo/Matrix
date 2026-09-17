@@ -1,0 +1,14 @@
+[Unit]
+Description=Discover unreviewed mainland US-index fund catalogue candidates
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/Matrix
+EnvironmentFile=-/opt/Matrix/.env
+ExecStart=/opt/Matrix/scripts/run_funds.sh --discover
+TimeoutStartSec=5min
+Nice=15
+MemoryMax=192M
+MemorySwapMax=64M

@@ -240,7 +240,11 @@ class FeishuNotifier:
         payload = self._build_alert_card(message, category)
         self._post(payload, webhook_key, success_desc="告警卡片")
 
-    def _post(self, payload: dict, webhook_key: str, success_desc: str) -> None:
+    def send_card(self, payload: dict, webhook_key: str = "default") -> bool:
+        """Send a purpose-built card and expose delivery failure to scheduled jobs."""
+        return self._post(payload, webhook_key, success_desc="信息卡片")
+
+    def _post(self, payload: dict, webhook_key: str, success_desc: str) -> bool:
         """将卡片 payload POST 至对应 Webhook，带重试；异常仅记录日志不抛出。"""
         url = self.settings.get_webhook_url(webhook_key)
         attempts = max(1, int(self.settings.feishu_retry_attempts))
@@ -266,18 +270,22 @@ class FeishuNotifier:
                         f"HTTP状态={resp.status_code} 响应={resp.text}"
                     )
                 else:
-                    if resp.status_code == 200 and resp_json.get("code") == 0:
+                    if not isinstance(resp_json, dict):
+                        retryable = False
+                        message = f"飞书响应 JSON 不是对象 [{webhook_key}]"
+                    elif resp.status_code == 200 and resp_json.get("code") == 0:
                         logger.info(f"飞书推送成功 [{webhook_key}]，{success_desc}")
-                        return
-                    retryable = resp.status_code in (429,) or resp.status_code >= 500
-                    message = (
-                        f"飞书推送失败 [{webhook_key}] "
-                        f"HTTP状态={resp.status_code} 飞书响应={resp.text}"
-                    )
+                        return True
+                    else:
+                        retryable = resp.status_code in (429,) or resp.status_code >= 500
+                        message = (
+                            f"飞书推送失败 [{webhook_key}] "
+                            f"HTTP状态={resp.status_code} 飞书响应={resp.text}"
+                        )
 
             if not retryable or attempt == attempts:
                 logger.error(message)
-                return
+                return False
 
             logger.warning(f"{message}；准备第 {attempt + 1}/{attempts} 次重试")
             backoff = self.settings.feishu_retry_backoff_seconds

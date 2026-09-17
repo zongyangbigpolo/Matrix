@@ -1,0 +1,10 @@
+[Unit]
+Description=Query public fund subscription limits daily at 09:30 Beijing time
+
+[Timer]
+OnCalendar=*-*-* 09:30:00 Asia/Shanghai
+Persistent=false
+Unit=matrix-funds.service
+
+[Install]
+WantedBy=timers.target

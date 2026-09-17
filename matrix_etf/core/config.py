@@ -31,6 +31,9 @@ class Settings(BaseSettings):
 
     # 策略参数
     recommendation_limit: int = Field(default=10, ge=1, le=10)
+    fund_catalog_path: str = "config/us_funds.json"
+    fund_source_timeout_seconds: float = Field(default=20.0, gt=0, le=60)
+    fund_source_attempts: int = Field(default=3, ge=1, le=5)
     liquidity_min_amount: float = 50_000_000.0
     rps_period: int = 120
     rps_threshold: float = 90.0
