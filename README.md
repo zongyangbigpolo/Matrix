@@ -524,6 +524,98 @@ ETF 线默认在**周一至周五 19:15**、A 股线在 **20:30**（晚间错开
 systemd service 的 `TimeoutStartSec` 已相应放宽（ETF 4h、A 股 5h、美股 6h、分析线 2h）。
 如需调整时间，编辑对应 `.timer` 的 `OnCalendar` 后 `systemctl daemon-reload`。
 
+### 6b. 可选：服务器每 30 分钟自行更新 main
+
+`matrix-update.timer` **默认不启用**。启用后检查 GitHub 上的 `main`，网络恢复后下一次
+检查即可自动快进；不依赖 SSH、开发电脑或 Copilot 会话。检查从启动后 5 分钟开始，
+以后每次检查结束后约 30 分钟再次检查（1 分钟计时精度）。在已运行的机器上首次启用
+可能立即检查。网络失败本次明确报错退出，不无限重试，也不把失败记成更新成功。
+
+这是保守的**源码更新器，不是完整发布管理器**：
+
+- 自动允许应用/测试 Python 源码、现有入口文件、README、LICENSE 和文档/文档图片更新。
+  下载后在私有目录暂存完整目标树，核对 Git 对象内容，并使用现有 `.venv/bin/python`
+  编译检查全部 Python 文件；**不导入应用、不运行策略/测试、不读取环境配置执行代码，
+  不启动任何业务服务或发送飞书**。语法检查不是功能测试，合入 main 前仍需运行测试。
+- **依赖、`pyproject.toml`、`uv.lock`、Python 版本、配置（包括基金目录）、
+  `.env.example`、运行脚本、更新器自身、systemd unit 或其他未批准路径一旦改变，
+  整次更新在改动线上文件前停止**，日志逐项列出需人工发布的文件。
+  不会跳过依赖安装后假装发布成功。管理员须在维护窗口一起完成对应依赖/配置/unit
+  安装和验证，再恢复自动更新；更新器私有副本及其 unit 也须重新安装。
+- 只接受精确 origin `https://github.com/zongyangbigpolo/Matrix.git`、完整历史的 `main`、
+  干净的已跟踪文件、无本地超前/分叉提交。未提交修改、特殊 index 标志、未完成 Git
+  操作、符号链接/子模块等不安全目标会拒绝。不会 reset、强制覆盖或自动解决冲突。
+- 更新器自己有独占锁，并在任何服务状态检查前取得五个业务 `flock`；
+  分析/回测共用分析锁，基金/发现共用基金锁。锁被占用或任一业务服务处于
+  active/activating/reloading/deactivating 时记录 `SKIP`，留待下次，不杀任务。
+  检查和更新期间这些锁始终保持，碰巧启动的业务脚本可能跳过一次执行。
+- 只快进已批准的目标提交，显式禁止覆盖 ignored/untracked 文件。保留 `.env`、
+  数据库、报告、日志、虚拟环境和其他未跟踪文件；`.env` 只在更新前后计算摘要核对，
+  不复制其内容、不输出摘要。旧版全部已跟踪源码/配置备份至
+  `/opt/matrix-backups/update-*/source.tar`，私有 `manifest.json` 记录新旧提交及摘要。
+  **不复制运行中的数据库，也不提供数据库回滚。**
+- 只保留最近三份成功源码备份；失败备份不自动删除。有未完成备份时后续运行报错暂停，
+  避免上次中断后误报成功。暂存树每个文件上限 8 MiB，总计上限 64 MiB；
+  检查可用磁盘，Git fetch 最长 90 秒、语法验证最长 60 秒，服务总限时 10 分钟，
+  内存上限 256 MiB、swap 上限 64 MiB，低 CPU/IO 优先级，适合与 Java/MySQL 共用小内存主机。
+
+**安装前提：** Linux/systemd、Git、util-linux 的 `runuser`/`flock`、已验证可用的
+`.venv`（包括当前锁文件所需依赖）。目录必须是 `/opt/Matrix` 的普通完整 Git checkout，
+不是 worktree/符号链接。**仓库根目录、`.git` 及需由 Git 修改的已跟踪文件必须归
+`admin:admin` 所有**；协调器以 root 运行，但每条 Git 命令均通过 `runuser -u admin`
+执行。不设置全局 `safe.directory`，不更改网络/凭据。
+上文 root clone 的旧安装须先在维护窗口妥善移交仓库所有权；不要为了修 Git 权限而
+盲目递归修改 `.env`、数据库、日志和虚拟环境的所有权。
+现有七个业务 unit 应使用默认脚本和锁路径，`.env`、unit drop-in、手工命令中均不能
+覆盖 `MATRIX_*_HOME` / `MATRIX_*_LOCK_FILE`；不要绕过脚本直接运行 Python，也不要同时
+手工操作 Git。初次安装须先按维护部署流程把包含本功能的 main 发布到线上并验证，
+自动更新器不能代替首次依赖和业务 unit 的安装。
+
+确认上述前提后，在 `/opt/Matrix` 执行：
+
+```bash
+stat -c '%U:%G %a %n' /opt/Matrix /opt/Matrix/.git
+sudo -u admin git -C /opt/Matrix status --short --untracked-files=no
+sudo -u admin git -C /opt/Matrix branch --show-current
+sudo -u admin git -C /opt/Matrix remote get-url origin
+
+sudo install -d -m 755 /usr/local/libexec
+sudo install -o root -g root -m 700 scripts/update_matrix.py /usr/local/libexec/matrix-update.py
+sudo install -d -o root -g root -m 700 /opt/matrix-backups
+sudo install -o root -g root -m 644 deploy/systemd/matrix-update.service deploy/systemd/matrix-update.timer /etc/systemd/system/
+sudo systemd-analyze verify /etc/systemd/system/matrix-update.service /etc/systemd/system/matrix-update.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now matrix-update.timer
+
+systemctl list-timers matrix-update.timer --no-pager
+sudo journalctl -u matrix-update.service -n 80 --no-pager
+# 可选：立即检查代码更新；不会触发基金或其他业务推送
+sudo systemctl start matrix-update.service
+```
+
+入口使用 checkout 外的 root 私有 Python 副本，且程序一次性载入，不存在 shell 脚本
+执行到一半被 Git 替换的问题。更新服务不加载 `.env`，不调整已有业务 timer；
+基金每日 **09:30**、目录发现周日 **10:00** 的日程和启用状态保持不变。
+
+**失败处理与回滚：**
+
+1. 用 `journalctl -u matrix-update.service` 查看 `ERROR`/`SKIP` 和备份路径。
+   连不上 GitHub 会失败，定时器仍保留，30 分钟后再次检查；不需要 SSH 会话保持在线。
+   依赖/unit/config 拦截需要人工维护部署，不会随着网络恢复自动解决。
+2. 暂停自动检查：`sudo systemctl disable --now matrix-update.timer`。
+   等已运行的 updater 自然结束，勿在 Git 修改文件过程中随意终止进程。需要修复/回滚时，
+   在维护窗口暂停业务调度、等待任务结束并持有五个锁；不要启动业务服务来“测试”更新器。
+3. 首选在上游 main 提交经过测试的源码 revert，再让服务器安全快进。
+   紧急本地回滚可依据私有 manifest 的 `old`，由 admin 使用
+   `git restore --source=<old> --staged --worktree -- <逐项审核的已跟踪改动路径>` 恢复源码，
+   这会留下明确的本地变更并自动阻止后续更新，直到管理员完成协调。
+   不要整体解压备份覆盖 `/opt/Matrix`，不要 `reset --hard` 或覆盖 `.env`/运行数据。
+4. 掉电、OOM、磁盘故障等可能中断 Git 的文件更新；源码快进不是跨文件事务。
+   有未完成备份时须人工核查 HEAD、index、源码、`.env` 和依赖，必要时使用旧源码备份恢复，
+   确认一致后把该失败备份**移到备份目录外的安全位置保留**，再重新启用 timer。
+   可人工清理中断留下的 `.stage-*`（确认 updater 未运行）；切勿删除业务锁文件。
+   源码更新无法自动回滚后续业务运行产生的数据变更；代码/数据库迁移须另行安排维护发布。
+
 ### 7. 验证：手动跑一次并确认飞书收到推送
 
 装好定时任务后，不必等到收盘，立刻手动触发一次做端到端验证：

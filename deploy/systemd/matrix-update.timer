@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Matrix main every 30 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=30min
+AccuracySec=1min
+Unit=matrix-update.service
+
+[Install]
+WantedBy=timers.target

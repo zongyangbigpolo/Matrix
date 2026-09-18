@@ -1,0 +1,21 @@
+[Unit]
+Description=Safely fast-forward Matrix main (source-only updates)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/Matrix
+ExecStart=/opt/Matrix/.venv/bin/python -I -S /usr/local/libexec/matrix-update.py
+UMask=0077
+TimeoutStartSec=10min
+TimeoutStopSec=15s
+KillMode=control-group
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=25%
+MemoryMax=256M
+MemorySwapMax=64M
+TasksMax=32
+PrivateTmp=true
