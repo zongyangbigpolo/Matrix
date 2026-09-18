@@ -10,7 +10,7 @@ import pytest
 
 import fund_main
 from matrix_etf.core.config import Settings
-from matrix_etf.funds.card import build_card
+from matrix_etf.funds.card import _fund_name_and_class, build_card
 from matrix_etf.funds.catalog import load_catalog, parse_candidates, us_index_category
 from matrix_etf.funds.monitor import select_funds
 from matrix_etf.funds.source import FundQuote, FundSourceError
@@ -104,11 +104,18 @@ def test_ten_product_cap_ordering_and_no_share_class_limit_addition():
     result = select_funds(catalog, quotes)
     assert len(result.groups) == 10
     assert result.eligible_groups == 12
+    assert result.eligible_shares == 24
+    assert result.single_share_total == Decimal("78")
+    assert result.category_totals[0].products == 12
+    assert result.category_totals[0].daily_limit == Decimal("78")
     assert result.groups[0][0].daily_limit == 12
     assert result.groups[-1][0].daily_limit == 3
     assert all(len(group) == 2 for group in result.groups)
     assert select_funds(catalog[::-1], quotes) == result
-    assert len(select_funds(catalog, quotes, 2).groups) == 2
+    smaller = select_funds(catalog, quotes, 2)
+    assert len(smaller.groups) == 2
+    assert smaller.single_share_total == result.single_share_total
+    assert smaller.category_totals == result.category_totals
 
 
 @pytest.mark.parametrize("limit", [0, 11, -1, True, 1.5])
@@ -117,7 +124,7 @@ def test_invalid_recommendation_limit(limit):
         select_funds([("270042",)], {"270042": quote()}, limit)
 
 
-def test_card_links_labels_risk_and_fund_name_escaping():
+def test_card_links_summary_and_fund_name_escaping():
     q = quote(name="广发纳斯达克100[A]<at user_id=\"all\">")
     selected = select_funds([("270042",)], {"270042": q})
     card = build_card(
@@ -126,17 +133,79 @@ def test_card_links_labels_risk_and_fund_name_escaping():
     text = json.dumps(card, ensure_ascii=False)
     assert "https://fund.eastmoney.com/270042.html" in text
     assert "xueqiu.com" not in text
-    assert "公布日累计上限 ¥2" in text
-    assert "额度不是个人剩余额度" in text and "不可相加" in text
-    assert "非规则生效时间" in text and "周末" in text
+    assert "每日上限 **¥2**" in text
+    assert "今日可买：1 只基金" in text and "单日额度合计：¥2" in text
+    assert "A、C 各限100元，这只计100元" in text
+    assert "周末" in text
     assert "<at " not in text
-    assert "不是买入建议" in text
+    for boilerplate in (
+        "额度不是个人剩余额度", "不可相加", "公开入口无稳定性", "单笔限制",
+        "不是买入建议", "汇率", "最终以实际交易页面", "非规则生效时间",
+    ):
+        assert boilerplate not in text
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("宝盈纳斯达克100指数发起(QDII)A人民币", ("宝盈纳斯达克100", "A")),
+    ("天弘标普500发起(QDII-FOF)C", ("天弘标普500(FOF)", "C")),
+    ("大成标普500等权重指数(QDII)C人民币", ("大成标普500等权重", "C")),
+    ("国泰纳斯达克100指数", ("国泰纳斯达克100", "")),
+    ("华泰柏瑞纳斯达克100ETF发起式联接(QDII)A", ("华泰柏瑞纳斯达克100", "A")),
+    ("嘉实纳斯达克100ETF发起联接(QDII)I人民币", ("嘉实纳斯达克100", "I")),
+    ("易方达纳斯达克100ETF联接（QDII-LOF）A（人民币）", ("易方达纳斯达克100(LOF)", "A")),
+])
+def test_short_names_keep_share_classes_and_distinct_product_types(name, expected):
+    assert _fund_name_and_class(name) == expected
+
+
+def test_summary_covers_hidden_products_and_category_totals():
+    catalog = [("000001", "000002"), ("000003",), ("000004",), ("000005",), ("000006",)]
+    quotes = {
+        "000001": quote("000001", daily_limit=Decimal("100")),
+        "000002": quote("000002", daily_limit=Decimal("100")),
+        "000003": quote("000003", name="天弘标普500人民币A", daily_limit=Decimal("10")),
+        "000004": quote("000004", name="大成标普500等权重人民币A", daily_limit=Decimal("20")),
+        "000005": quote("000005", status="暂停申购", daily_limit=Decimal("9999")),
+        "000006": quote("000006", daily_limit=None),
+    }
+    selected = select_funds(catalog, quotes, limit=1)
+    assert selected.eligible_groups == 3
+    assert selected.eligible_shares == 4
+    assert selected.single_share_total == Decimal("130")
+    assert [(c.category, c.products, c.daily_limit) for c in selected.category_totals] == [
+        ("纳斯达克100", 1, Decimal("100")),
+        ("标普500", 1, Decimal("10")),
+        ("标普500等权", 1, Decimal("20")),
+    ]
+    card = build_card(selected, datetime.now(ZoneInfo("Asia/Shanghai")))
+    text = json.dumps(card, ensure_ascii=False)
+    assert "今日可买：3 只基金" in text
+    assert "单日额度合计：¥130" in text
+    assert "另2只未展开，已计入顶部总数和额度" in text
+    assert "9999" not in text and "9,999" not in text
+    assert "另有1个份额信息未确认" in text
+
+
+def test_different_share_class_limits_are_not_hidden_or_added():
+    quotes = {
+        "000001": quote("000001", name="测试标普500A", minimum=Decimal("1"), daily_limit=Decimal("100")),
+        "000002": quote("000002", name="测试标普500C", minimum=Decimal("10"), daily_limit=Decimal("200")),
+    }
+    selected = select_funds([("000001", "000002")], quotes)
+    assert selected.single_share_total == Decimal("200")
+    text = json.dumps(build_card(selected, datetime.now(ZoneInfo("Asia/Shanghai"))), ensure_ascii=False)
+    assert "A类 000001" in text and "每日 ¥100 · ¥1起" in text
+    assert "C类 000002" in text and "每日 ¥200 · ¥10起" in text
+    assert "¥300" not in text
 
 
 def test_empty_card_is_explicit_and_does_not_make_up_candidates():
     selected = select_funds([("270042",)], {"270042": quote(status="暂停申购")})
     card = build_card(selected, datetime.now(ZoneInfo("Asia/Shanghai")))
-    assert "本次没有可确认申购状态及额度" in json.dumps(card, ensure_ascii=False)
+    text = json.dumps(card, ensure_ascii=False)
+    assert "今天没有查到额度明确、可申购的基金" in text
+    assert "今日可买：0 只基金" in text and "单日额度合计：¥0" in text
+    assert selected.single_share_total == 0 and not selected.category_totals
     assert card["card"]["header"]["template"] == "orange"
 
 
@@ -174,7 +243,7 @@ def test_cli_dry_run_needs_no_webhook_and_creates_no_database(cli, capsys, monke
     monkeypatch.delenv("FEISHU_WEBHOOK_URL", raising=False)
     before = set(catalog.parent.iterdir())
     assert fund_main.main(["--dry-run", "--catalog", str(catalog)]) == 0
-    assert "公布日累计上限" in capsys.readouterr().out
+    assert "单日额度合计" in capsys.readouterr().out
     assert set(catalog.parent.iterdir()) == before
     notifier.send_card.assert_not_called()
     notifier.send_alert.assert_not_called()

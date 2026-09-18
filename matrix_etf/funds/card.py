@@ -1,12 +1,12 @@
 """Fund-specific Feishu links and clearly labelled public channel limits."""
 
 import html
+import re
+import unicodedata
 from datetime import datetime
 from decimal import Decimal
 
-from matrix_etf.funds.catalog import us_index_category
 from matrix_etf.funds.monitor import FundSelection
-from matrix_etf.funds.source import SOURCE_URL
 
 
 def _escape(text: str) -> str:
@@ -24,49 +24,81 @@ def _div(text: str) -> dict:
     return {"tag": "div", "text": {"tag": "lark_md", "content": text}}
 
 
+def _fund_name_and_class(name: str) -> tuple[str, str]:
+    name = unicodedata.normalize("NFKC", name)
+    for old, new in (
+        ("(QDII-FOF)", "(FOF)"), ("(QDII-LOF)", "(LOF)"), ("(QDII)", ""),
+        ("(人民币)", ""), ("人民币", ""),
+    ):
+        name = name.replace(old, new)
+    share = re.search(r"([ACDEFI])$", name)
+    share_class = share[1] if share else ""
+    if share:
+        name = name[:share.start()]
+    for word in ("ETF联接", "ETF发起式联接", "ETF发起联接", "发起式", "发起", "指数"):
+        name = name.replace(word, "")
+    return name.strip(), share_class
+
+
 def build_card(
     selection: FundSelection, fetched_at: datetime, calendar_note: str | None = None
 ) -> dict:
-    elements = [_div(
-        f"**渠道：天天基金公开数据｜人民币场外申购**\n"
-        f"**查询完成：{fetched_at:%Y-%m-%d %H:%M:%S %Z}**（非规则生效时间）\n"
-        f"目录 {selection.catalog_count} 类份额；符合条件 {selection.eligible_groups} 个产品；"
-        f"展示 {len(selection.groups)} 个（同产品份额合并）"
-    )]
+    summary = [
+        f"天天基金 · {fetched_at:%m-%d %H:%M} 更新（北京时间）",
+        f"**今日可买：{selection.eligible_groups} 只基金**",
+        f"**单日额度合计：¥{_amount(selection.single_share_total)}**",
+        "每只基金选额度最高的一个份额计算。例如 A、C 各限100元，这只计100元。",
+    ]
+    if selection.category_totals:
+        summary.append("\n".join(
+            f"{item.category}：{item.products}只 · ¥{_amount(item.daily_limit)}"
+            for item in selection.category_totals
+        ))
+    elements = [_div("\n".join(summary))]
     if calendar_note:
         elements.append(_div(
-            f"**日历提示：{_escape(calendar_note)}**。委托受理与份额确认日期以销售平台为准。"
+            f"**{_escape(calendar_note)}**：下单确认可能顺延。"
         ))
     if not selection.groups:
-        elements.append(_div("**本次没有可确认申购状态及额度的产品，不补用旧数据。**"))
+        elements.append(_div("今天没有查到额度明确、可申购的基金。"))
+    else:
+        hidden = selection.eligible_groups - len(selection.groups)
+        listing = f"**额度从高到低 · 展示{len(selection.groups)}只**"
+        if hidden:
+            listing += f"\n另{hidden}只未展开，已计入顶部总数和额度。"
+        elements.append(_div(listing))
     for index, group in enumerate(selection.groups, 1):
-        lines = [f"**{index}. {us_index_category(group[0].name, group[0].fund_type)}**"]
+        name, _ = _fund_name_and_class(group[0].name)
+        url = f"https://fund.eastmoney.com/{group[0].code}.html"
+        lines = [f"**{index}. [{_escape(name)}]({url})**"]
+        same_terms = len({(quote.minimum, quote.daily_limit) for quote in group}) == 1
+        if same_terms:
+            lines.append(
+                f"每日上限 **¥{_amount(group[0].daily_limit)}**"
+                f" · ¥{_amount(group[0].minimum)}起购"
+            )
+        options = []
         for quote in group:
             url = f"https://fund.eastmoney.com/{quote.code}.html"
-            lines.append(
-                f"[{_escape(quote.name)}]({url})（{quote.code}）\n"
-                f"{quote.status}｜起购 ¥{_amount(quote.minimum)}｜"
-                f"公布日累计上限 ¥{_amount(quote.daily_limit)}"
-            )
+            _, share_class = _fund_name_and_class(quote.name)
+            label = f"{share_class}类 {quote.code}" if share_class else quote.code
+            option = f"[{label}]({url})"
+            if not same_terms:
+                option += (
+                    f"：每日 ¥{_amount(quote.daily_limit)}"
+                    f" · ¥{_amount(quote.minimum)}起"
+                )
+            options.append(option)
+        lines.append((" · " if same_terms else "\n").join(options))
         elements.extend([{"tag": "hr"}, _div("\n".join(lines))])
     if selection.unknown:
-        details = "；".join(f"{code}：{reason}" for code, reason in selection.unknown[:8])
-        elements.append(_div(f"**待核实 {len(selection.unknown)} 类份额，不纳入清单：**\n{details}"))
-    elements.extend([{"tag": "hr"}, _div(
-        f"暂停/封闭/场内等未纳入：{selection.unavailable_count} 类份额。\n"
-        "**额度不是个人剩余额度；A/C等份额可能共用上限，不可相加。**\n"
-        "公开入口无稳定性和实时性保证；单笔限制、定投例外及渠道合并规则未核实。"
-        "零值、缺失值及超大占位值不解释为不限额；支付宝/银行/直销限额不能由此推断。\n"
-        "这是申购信息，不是买入建议；仍有美股波动、汇率及QDII确认延迟风险。"
-        "最终以实际交易页面和基金公告为准。\n"
-        f"[公开数据来源]({SOURCE_URL}?t=8&page=1,50000&js=reData&sort=fcode,asc)"
-    )])
+        elements.append(_div(f"另有{len(selection.unknown)}个份额信息未确认，未计入统计。"))
     return {
         "msg_type": "interactive",
         "card": {
             "header": {
                 "title": {"tag": "plain_text", "content": "Matrix 美股基金申购清单 | 天天基金"},
-                "template": "orange" if selection.unknown or not selection.groups else "turquoise",
+                "template": "turquoise" if selection.groups else "orange",
             },
             "elements": elements,
         },
