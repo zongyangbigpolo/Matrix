@@ -45,15 +45,21 @@ def build_card(
 ) -> dict:
     summary = [
         f"天天基金 · {fetched_at:%m-%d %H:%M} 更新（北京时间）",
-        f"**今日可买：{selection.eligible_groups} 只基金**",
-        f"**单日额度合计：¥{_amount(selection.single_share_total)}**",
-        "每只基金选额度最高的一个份额计算。例如 A、C 各限100元，这只计100元。",
+        "**今日可买 · 单日额度 / 基金数量**",
     ]
-    if selection.category_totals:
-        summary.append("\n".join(
-            f"{item.category}：{item.products}只 · ¥{_amount(item.daily_limit)}"
-            for item in selection.category_totals
-        ))
+    for label, categories in (
+        ("标普合计", {"标普500", "标普500等权"}),
+        ("纳斯达克合计", {"纳斯达克100"}),
+    ):
+        items = [item for item in selection.category_totals if item.category in categories]
+        amount = sum((item.daily_limit for item in items), Decimal(0))
+        count = sum(item.products for item in items)
+        summary.append(f"**{label}：¥{_amount(amount)} · {count}只基金**")
+    summary.extend([
+        f"**美股总计：¥{_amount(selection.single_share_total)}"
+        f" · {selection.eligible_groups}只基金**",
+        "每只基金只选一个份额，按最高额度统计；标普包含等权基金。",
+    ])
     elements = [_div("\n".join(summary))]
     if calendar_note:
         elements.append(_div(

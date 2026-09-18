@@ -134,8 +134,10 @@ def test_card_links_summary_and_fund_name_escaping():
     assert "https://fund.eastmoney.com/270042.html" in text
     assert "xueqiu.com" not in text
     assert "每日上限 **¥2**" in text
-    assert "今日可买：1 只基金" in text and "单日额度合计：¥2" in text
-    assert "A、C 各限100元，这只计100元" in text
+    assert "美股总计：¥2 · 1只基金" in text
+    assert "每只基金只选一个份额，按最高额度统计" in text
+    assert "标普合计：¥0 · 0只基金" in text
+    assert "纳斯达克合计：¥2 · 1只基金" in text
     assert "周末" in text
     assert "<at " not in text
     for boilerplate in (
@@ -179,8 +181,10 @@ def test_summary_covers_hidden_products_and_category_totals():
     ]
     card = build_card(selected, datetime.now(ZoneInfo("Asia/Shanghai")))
     text = json.dumps(card, ensure_ascii=False)
-    assert "今日可买：3 只基金" in text
-    assert "单日额度合计：¥130" in text
+    assert "美股总计：¥130 · 3只基金" in text
+    assert "标普合计：¥30 · 2只基金" in text
+    assert "纳斯达克合计：¥100 · 1只基金" in text
+    assert text.index("标普合计") < text.index("纳斯达克合计") < text.index("美股总计")
     assert "另2只未展开，已计入顶部总数和额度" in text
     assert "9999" not in text and "9,999" not in text
     assert "另有1个份额信息未确认" in text
@@ -204,7 +208,9 @@ def test_empty_card_is_explicit_and_does_not_make_up_candidates():
     card = build_card(selected, datetime.now(ZoneInfo("Asia/Shanghai")))
     text = json.dumps(card, ensure_ascii=False)
     assert "今天没有查到额度明确、可申购的基金" in text
-    assert "今日可买：0 只基金" in text and "单日额度合计：¥0" in text
+    assert "美股总计：¥0 · 0只基金" in text
+    assert "标普合计：¥0 · 0只基金" in text
+    assert "纳斯达克合计：¥0 · 0只基金" in text
     assert selected.single_share_total == 0 and not selected.category_totals
     assert card["card"]["header"]["template"] == "orange"
 
@@ -243,7 +249,7 @@ def test_cli_dry_run_needs_no_webhook_and_creates_no_database(cli, capsys, monke
     monkeypatch.delenv("FEISHU_WEBHOOK_URL", raising=False)
     before = set(catalog.parent.iterdir())
     assert fund_main.main(["--dry-run", "--catalog", str(catalog)]) == 0
-    assert "单日额度合计" in capsys.readouterr().out
+    assert "美股总计" in capsys.readouterr().out
     assert set(catalog.parent.iterdir()) == before
     notifier.send_card.assert_not_called()
     notifier.send_alert.assert_not_called()
