@@ -9,12 +9,15 @@ from __future__ import annotations
 import logging
 
 
-def create_tickflow_client(api_key: str, logger: logging.Logger | None = None):
+def create_tickflow_client(
+    api_key: str, logger: logging.Logger | None = None, **client_options,
+):
     """根据 API Key 创建 tickflow 客户端。
 
     Args:
         api_key: tickflow API Key，为空时使用免费服务。
         logger: 可选日志器，用于记录当前使用的服务档位。
+        client_options: 可选 SDK 参数，如有界任务的 timeout / max_retries。
 
     Returns:
         已初始化的 ``tickflow.TickFlow`` 客户端实例。
@@ -24,8 +27,8 @@ def create_tickflow_client(api_key: str, logger: logging.Logger | None = None):
     if api_key:
         if logger is not None:
             logger.info("使用 tickflow 完整服务（API Key 已配置）")
-        return TickFlow(api_key=api_key)
+        return TickFlow(api_key=api_key, **client_options)
 
     if logger is not None:
         logger.info("使用 tickflow 免费服务")
-    return TickFlow.free()
+    return TickFlow.free(**client_options)

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run mainland US-equity ETF closing-price list before generic ETF strategies
+
+[Timer]
+OnCalendar=Mon..Fri 18:45:00 Asia/Shanghai
+Persistent=false
+Unit=matrix-us-etf.service
+
+[Install]
+WantedBy=timers.target

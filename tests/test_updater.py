@@ -468,3 +468,14 @@ def test_unit_is_opt_in_private_bounded_and_does_not_start_jobs():
     assert "OnCalendar=Sun 10:00:00 Asia/Shanghai" in (
         directory / "matrix-fund-catalog.timer"
     ).read_text()
+
+
+def test_us_etf_entrypoint_and_service_share_existing_five_locks():
+    assert updater.source_only("us_etf_main.py")
+    assert "us_etf_main.py" in updater.ENTRYPOINTS
+    assert "matrix-us-etf" in updater.SERVICES
+    assert len(updater.SERVICES) == 8
+    assert len(updater.JOB_LOCKS) == 5
+    assert ".matrix_etf.lock" in updater.JOB_LOCKS
+    assert not updater.source_only("scripts/run_us_etf.sh")
+    assert not updater.source_only("deploy/systemd/matrix-us-etf.timer")

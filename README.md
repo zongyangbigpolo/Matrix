@@ -171,6 +171,80 @@ ETF、A 股、美股独立限额；同一标的命中多个策略时仍保留各
 > 大市场长窗口可能耗时数小时，建议用后台服务运行。历史模拟不是实际账户收益，
 > 未复权、停牌、幸存者偏差等数据限制仍需注意，短窗口结果不代表长期表现。
 
+### 境内场内美股 ETF 收盘清单（`us_etf_main.py`）
+
+这是一条独立的**行情信息清单**，不是新策略，不写推荐历史/绩效信号，也不占用通用
+ETF 策略最多10只的名额。每次从 TickFlow 当前 `CN_ETF` 元数据发现名称明确的境内
+交易所美股权益 ETF，复用 `DB_PATH` 下的 `etf_basic` / `etf_daily`，不建新库或迁移。
+免费服务无需 API Key；这里只使用历史日线，**不是实时行情，也不是场外基金申购清单**。
+
+按名称证据标注**纳斯达克100、标普500、其他美股指数/行业**（每类显示数量）。
+实际“纳指ETF/纳斯达克ETF”宽基简称归入纳斯达克100；“纳指科技/生物科技”等行业
+限定名称归入其他类，不能因为含“纳指”就标成100。美国50、道琼斯工业也归入其他类。
+标普油气、标普消费、标普生物科技等海外股票ETF归入行业类，不混入宽基类。
+标普油气股票ETF不是原油期货：这些简称只按已核对的代码与当前名称同时匹配纳入，
+不把所有“标普”或“油气”产品都认作美股。
+例如富国标普油气对应 S&P Oil & Gas Exploration & Production Select Industry，
+景顺标普消费对应标普500消费精选指数；它们均为海外股票指数产品。
+排除联接、LOF、外币份额、美国上市 ETF、全球/亚洲/香港基金、商品、债券及模糊名称；
+不是所有 QDII 或所有“标普”基金，更不声称覆盖全部美股基金。
+发现范围严格限于当前 `CN_ETF` 池；该池可能少于交易所ETF目录，不代表覆盖所有已知产品。
+按每只最新日线的**人民币成交额降序**，未知置后，同额按代码排序；
+不超过50只全部展示，超过则展示前50只，与 `RECOMMENDATION_LIMIT` 无关。
+
+每行显示实际行情日期、人民币收盘价、与上一有效收盘的百分比变化、对比日期、
+人民币成交额，以及可点击的行情页。缺失报价的新基金仍显示“暂无行情”；
+日线使用与通用ETF引擎一致的前复权口径，涨跌幅由有效收盘价计算，不冒充实时或
+交易所涨跌幅字段；不向共享库混写另一套未复权历史序列。
+上次有效报价非上一境内交易日时，明确标为“非单日涨跌幅”。
+滞后报价逐只标注，不用查询时间冒充行情日期。不展示净值、溢价或“可买额度”。
+日线窗口为最近30条、不拉全市场历史或计算策略指标；最多5000条池元数据、
+200个明确候选，超过安全边界报错而非静默截断。元数据分批250只、日线分批20只；
+单请求超时20秒、不自动重试，CLI整体12分钟、服务15分钟上限。
+外部空池/元数据不全/分类无结果/请求失败均报错且返回非零，不使用历史缓存掩盖失败。
+正常返回但滞后的日线可展示，标明应有日期与实际日期。仅从**本次响应日期**
+做有界 SQLite 读取，空响应不会复活本地旧报价。飞书按实际 JSON 字节自动分页，
+每条不超过20 KiB，不因消息过长丢弃选中产品。
+
+| 命令 | 用途 |
+|---|---|
+| `python us_etf_main.py --dry-run` | 在线查询、更新共享行情库、打印卡片；不发送飞书 |
+| `python us_etf_main.py --dry-run --force` | 周末/节假日也手工验证，仍显示实际行情日 |
+| `bash scripts/run_us_etf.sh --force` | 持共享ETF锁查询并推送；Linux要求 `flock` |
+
+默认按北京时间跳过周末及 `CN_MARKET_HOLIDAYS`，与现有交易日工具一致，
+**不是完整交易所节假日日历**；可用 `--force` 手工覆盖。
+可选路由 `STRATEGY_WEBHOOK_US_ETF`，不配置则使用默认飞书群，与场外
+`STRATEGY_WEBHOOK_FUND_US` 分开。计划时间为周一至周五 **18:45 Asia/Shanghai**，
+早于通用 ETF 的19:15；`Persistent=false` 不补发漏跑清单。
+runner遵循 `MATRIX_ETF_HOME` / `MATRIX_ETF_LOCK_FILE`，与通用ETF和更新器
+共用 `.matrix_etf.lock`，锁忙跳过，不新增第六个业务锁。直接调用Python不持锁；
+服务器上请总是使用runner。
+
+**首次安装必须人工维护发布**：自动更新器会拒绝本次脚本/unit/`.env.example`/更新器
+变化。先暂停 `matrix-update.timer`，等待更新服务及所有业务服务空闲，在已有五个
+业务锁保护下按维护流程发布已审核源码，保留 `.env`、数据库、虚拟环境和现有timer。
+本功能无新增依赖；不可用强制reset覆盖线上内容。发布后在 `/opt/Matrix` 执行：
+
+```bash
+command -v flock
+chmod +x scripts/run_us_etf.sh
+# 重新安装更新器私有副本，使新服务被纳入空闲状态检查
+sudo install -o root -g root -m 700 scripts/update_matrix.py /usr/local/libexec/matrix-update.py
+sudo install -m 644 deploy/systemd/matrix-us-etf.service deploy/systemd/matrix-us-etf.timer /etc/systemd/system/
+sudo systemd-analyze verify /etc/systemd/system/matrix-us-etf.service /etc/systemd/system/matrix-us-etf.timer
+sudo systemctl daemon-reload
+# 释放维护锁后，先验证数据和卡片；此命令不发送飞书
+bash scripts/run_us_etf.sh --dry-run --force
+# 确认输出和日期正确后，手动推送一次（即使当天为周日）
+bash scripts/run_us_etf.sh --force
+sudo systemctl enable --now matrix-us-etf.timer
+systemctl list-timers matrix-us-etf.timer --no-pager
+```
+
+最后仅在维护前已启用更新器时恢复它；不要顺带重装或修改原有timer。
+服务资源限额为 `MemoryMax=256M` / `MemorySwapMax=64M`，低CPU/IO优先级。
+
 ### 境内美股基金申购监控（`fund_main.py`）
 
 独立查询**天天基金公开渠道**的人民币场外申购状态与日累计限额，免费、无需 API Key，
@@ -549,7 +623,8 @@ systemd service 的 `TimeoutStartSec` 已相应放宽（ETF 4h、A 股 5h、美�
   干净的已跟踪文件、无本地超前/分叉提交。未提交修改、特殊 index 标志、未完成 Git
   操作、符号链接/子模块等不安全目标会拒绝。不会 reset、强制覆盖或自动解决冲突。
 - 更新器自己有独占锁，并在任何服务状态检查前取得五个业务 `flock`；
-  分析/回测共用分析锁，基金/发现共用基金锁。锁被占用或任一业务服务处于
+  分析/回测共用分析锁，基金/发现共用基金锁，通用ETF/境内美股ETF清单共用ETF锁。
+  八个业务服务均纳入检查。锁被占用或任一业务服务处于
   active/activating/reloading/deactivating 时记录 `SKIP`，留待下次，不杀任务。
   检查和更新期间这些锁始终保持，碰巧启动的业务脚本可能跳过一次执行。
 - 只快进已批准的目标提交，显式禁止覆盖 ignored/untracked 文件。保留 `.env`、

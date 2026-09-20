@@ -1,0 +1,15 @@
+[Unit]
+Description=Matrix mainland-listed US-equity ETF closing-price information
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/Matrix
+EnvironmentFile=-/opt/Matrix/.env
+ExecStart=/opt/Matrix/scripts/run_us_etf.sh
+TimeoutStartSec=15min
+Nice=15
+IOSchedulingClass=idle
+MemoryMax=256M
+MemorySwapMax=64M

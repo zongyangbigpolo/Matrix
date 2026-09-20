@@ -25,10 +25,13 @@ JOB_LOCKS = (
 )
 SERVICES = (
     "matrix-etf", "matrix-stock", "matrix-us", "matrix-analytics",
-    "matrix-backtest", "matrix-funds", "matrix-fund-catalog",
+    "matrix-backtest", "matrix-funds", "matrix-fund-catalog", "matrix-us-etf",
 )
 BUSY_STATES = {"active", "activating", "reloading", "deactivating"}
-ENTRYPOINTS = {"main.py", "stock_main.py", "us_main.py", "analytics_main.py", "fund_main.py"}
+ENTRYPOINTS = {
+    "main.py", "stock_main.py", "us_main.py", "analytics_main.py", "fund_main.py",
+    "us_etf_main.py",
+}
 MAX_TREE_BYTES = 64 * 1024 * 1024
 KEEP_BACKUPS = 3
 
