@@ -1,7 +1,8 @@
 """Fresh metadata discovery, selected-only daily sync, and indexed SQLite reads."""
 
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, time
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -71,11 +72,15 @@ class USEtfSource:
     def fetch(self, expected: date):
         products = self.discover()
         quotes = []
+        end_time = int(datetime.combine(
+            expected, time(23, 59, 59), tzinfo=ZoneInfo("Asia/Shanghai")
+        ).timestamp() * 1000)
         for start in range(0, len(products), DAILY_BATCH):
             chunk = products[start:start + DAILY_BATCH]
             data = self.client.klines.batch(
                 [p.symbol for p in chunk], period="1d", count=DAILY_COUNT,
                 adjust="forward", as_dataframe=True, max_workers=1, batch_size=DAILY_BATCH,
+                end_time=end_time,
             )
             # TickFlow may suppress failed batches. Missing keys are failures, not empty quotes.
             if not isinstance(data, dict) or any(p.symbol not in data for p in chunk):

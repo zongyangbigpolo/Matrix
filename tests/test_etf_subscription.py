@@ -191,7 +191,7 @@ def test_unsafe_symbols_never_reach_network_or_logs(monkeypatch, symbol):
     assert warning.call_args.args[1] == "<invalid symbol>"
 
 
-@pytest.mark.parametrize("status", [301, 302, 404, 429, 500])
+@pytest.mark.parametrize("status", [301, 302, 401, 403, 404, 429, 500, 503])
 def test_http_errors_and_redirects_are_not_followed(monkeypatch, status):
     session, response = mock_http(monkeypatch, status=status)
     assert_unknown(source.fetch_quotas(["513100.SH"], DAY)["513100.SH"], "http-status-not-200")
@@ -206,7 +206,9 @@ def test_request_failure_is_logged_without_sensitive_details(monkeypatch):
     session.get.side_effect = requests.Timeout("credential=do-not-log")
     assert_unknown(source.fetch_quotas(["513100.SH"], DAY)["513100.SH"], "request-failed")
     assert "do-not-log" not in str(warning.call_args)
-    warning.assert_called_once()
+    assert "do-not-log" not in str(warning.call_args_list)
+    assert warning.call_count == 2
+    assert session.get.call_count == 2
 
 
 @pytest.mark.parametrize("headers,chunks,issue", [
@@ -223,7 +225,7 @@ def test_bounded_network_response(monkeypatch, headers, chunks, issue):
 
 def test_stream_deadline_and_stream_failure(monkeypatch):
     mock_http(monkeypatch, chunks=[b"x", b"x"])
-    monkeypatch.setattr(source.time, "monotonic", Mock(side_effect=[0, 1, 21]))
+    monkeypatch.setattr(source.time, "monotonic", Mock(side_effect=[0, 0, 1, 21]))
     assert_unknown(source.fetch_quotas(["513100.SH"], DAY)["513100.SH"], "request-deadline-exceeded")
     monkeypatch.setattr(source.time, "monotonic", lambda: 0)
     _, response = mock_http(monkeypatch)
@@ -231,10 +233,10 @@ def test_stream_deadline_and_stream_failure(monkeypatch):
     assert_unknown(source.fetch_quotas(["513100.SH"], DAY)["513100.SH"], "request-failed")
 
 
-def test_all_symbols_returned_failures_isolated_and_no_retry(monkeypatch):
+def test_all_symbols_returned_failures_isolated_and_only_one_retry(monkeypatch):
     calls = []
 
-    def download(url):
+    def download(url, deadline=None):
         calls.append(url)
         if "513100" in url:
             raise requests.ConnectionError("error")
@@ -245,7 +247,7 @@ def test_all_symbols_returned_failures_isolated_and_no_retry(monkeypatch):
     assert set(result) == {"513100.SH", "159941.SZ"}
     assert result["513100.SH"].status == "unknown"
     assert result["159941.SZ"].status == "open"
-    assert len(calls) == 2
+    assert len(calls) == 3
 
 
 def test_empty_and_over_limit_selection_do_not_request(monkeypatch):
@@ -263,3 +265,81 @@ def test_programming_errors_are_not_silenced(monkeypatch):
     monkeypatch.setattr(source, "_download", Mock(side_effect=TypeError("programming error")))
     with pytest.raises(TypeError, match="programming error"):
         source.fetch_quotas(["513100.SH"], DAY)
+
+
+@pytest.mark.parametrize("error", [
+    requests.ConnectionError,
+    requests.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+])
+def test_transport_retry_then_verified_success_shares_original_deadline(monkeypatch, error):
+    download = Mock(side_effect=[error("secret=not-for-logs"), pcf()])
+    warning = Mock()
+    monkeypatch.setattr(source, "_download", download)
+    monkeypatch.setattr(source.logger, "warning", warning)
+    monkeypatch.setattr(source.time, "monotonic", Mock(side_effect=[100, 105]))
+    quota = source.fetch_quotas(["513100.SH"], DAY)["513100.SH"]
+    assert quota.status == "open"
+    assert quota.fund_cumulative == 5000000
+    assert download.call_count == 2
+    assert [call.kwargs["deadline"] for call in download.call_args_list] == [120, 120]
+    warning.assert_called_once()
+    assert "retrying once" in warning.call_args.args[0]
+    assert "secret" not in str(warning.call_args_list)
+
+
+def test_two_transport_failures_are_the_attempt_limit(monkeypatch):
+    download = Mock(side_effect=requests.Timeout("private network details"))
+    monkeypatch.setattr(source, "_download", download)
+    monkeypatch.setattr(source.time, "monotonic", lambda: 0)
+    assert_unknown(source.fetch_quotas(["513100.SH"], DAY)["513100.SH"], "request-failed")
+    assert download.call_count == 2
+
+
+@pytest.mark.parametrize("payload,issue", [
+    (b"not xml", "invalid-xml"),
+    (pcf(FundInstrumentID="513500"), "fund-code-mismatch"),
+    (pcf(TradingDay="20260917"), "effective-date-mismatch"),
+    (pcf(TradingDay="20260921"), "effective-date-mismatch"),
+    (pcf(CreationRedemptionSwitch="3"), "unverified-creation-status"),
+])
+def test_terminal_data_failures_are_not_retried(monkeypatch, payload, issue):
+    download = Mock(return_value=payload)
+    monkeypatch.setattr(source, "_download", download)
+    assert_unknown(source.fetch_quotas(["513100.SH"], DAY)["513100.SH"], issue)
+    download.assert_called_once()
+
+
+def test_elapsed_shared_budget_prevents_retry(monkeypatch):
+    download = Mock(side_effect=requests.Timeout("private network details"))
+    warning = Mock()
+    monkeypatch.setattr(source, "_download", download)
+    monkeypatch.setattr(source.logger, "warning", warning)
+    monkeypatch.setattr(source.time, "monotonic", Mock(side_effect=[100, 120]))
+    assert_unknown(source.fetch_quotas(["513100.SH"], DAY)["513100.SH"],
+                   "request-deadline-exceeded")
+    download.assert_called_once()
+    warning.assert_called_once()
+    assert "retrying" not in str(warning.call_args_list)
+
+
+def test_download_does_not_start_request_after_deadline(monkeypatch):
+    session, _ = mock_http(monkeypatch)
+    monkeypatch.setattr(source.time, "monotonic", lambda: 20)
+    with pytest.raises(source._QuotaError, match="request-deadline-exceeded"):
+        source._download("https://query.sse.com.cn/", deadline=20)
+    session.get.assert_not_called()
+
+
+def test_request_timeouts_shrink_to_remaining_shared_budget(monkeypatch):
+    session, _ = mock_http(monkeypatch)
+    monkeypatch.setattr(source.time, "monotonic", lambda: 19)
+    assert source._download("https://query.sse.com.cn/", deadline=20) == pcf()
+    assert session.get.call_args.kwargs["timeout"] == (0.5, 0.5)
+
+
+def test_nontransport_request_failure_is_not_retried(monkeypatch):
+    download = Mock(side_effect=requests.RequestException("non-transport failure"))
+    monkeypatch.setattr(source, "_download", download)
+    assert_unknown(source.fetch_quotas(["513100.SH"], DAY)["513100.SH"], "request-failed")
+    download.assert_called_once()

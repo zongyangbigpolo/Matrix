@@ -66,14 +66,18 @@ def main(argv: list[str] | None = None) -> int:
             if not args.dry_run:
                 notifier = FeishuNotifier(settings)
             expected = expected_close_day(now, settings)
+            subscription_date = now.date() if reason is None else expected
             source = USEtfSource(settings)
             quotes = source.fetch(expected)
             selected = select_quotes(quotes)
-            quotas = fetch_quotas([q.product.symbol for q in selected], expected)
+            quotas = fetch_quotas([q.product.symbol for q in selected], subscription_date)
             selected = [
                 replace(q, subscription=quotas[q.product.symbol]) for q in selected
             ]
-            cards = build_cards(selected, candidate_count=len(quotes), now=now, expected=expected)
+            cards = build_cards(
+                selected, candidate_count=len(quotes), now=now, expected=expected,
+                subscription_date=subscription_date,
+            )
             logger.info(
                 f"境内美股 ETF 收盘清单：候选{len(quotes)}只，展示{len(selected)}只，"
                 f"滞后{sum(q.stale for q in selected)}只，"

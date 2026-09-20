@@ -56,7 +56,6 @@ def _subscription_lines(quote: Quote, expected: date) -> list[str]:
         lines.append(f"最小申购单位：{_shares(quota.creation_unit)}")
     else:
         lines.append("最小申购单位：未确认")
-    lines.append("实时剩余可申购份额：未确认")
     return lines
 
 
@@ -87,7 +86,9 @@ def _row(quote: Quote, index: int, expected: date) -> dict:
 
 
 def build_cards(quotes: list[Quote], *, candidate_count: int, now: datetime,
-                expected: date) -> list[dict]:
+                expected: date, subscription_date: date | None = None) -> list[dict]:
+    if subscription_date is None:
+        subscription_date = expected
     counts = Counter(q.product.category for q in quotes)
     dates = sorted({q.trade_date.isoformat() for q in quotes if q.trade_date})
     date_label = "暂无行情日期" if not dates else (
@@ -95,22 +96,23 @@ def build_cards(quotes: list[Quote], *, candidate_count: int, now: datetime,
     )
     has_verified_quota = any(
         q.subscription is not None
-        and q.subscription.effective_date == expected
+        and q.subscription.effective_date == subscription_date
         and q.subscription.status in {"open", "suspended"}
         for q in quotes
     )
     subscription_summary = (
-        f"申购额度对应 {expected:%m-%d}：当日公布上限，非实时剩余。"
-        if has_verified_quota else f"申购额度：未取得 {expected:%m-%d} 有效清单。"
+        f"申购额度对应 {subscription_date:%m-%d}：当日公布上限。"
+        if has_verified_quota else f"申购额度：未取得 {subscription_date:%m-%d} 有效清单。"
     )
     summary = (
         f"{now:%m-%d %H:%M} 更新（北京时间） · 收盘日 {date_label}\n"
         + " · ".join(f"{c} {counts[c]}只" for c in CATEGORIES)
         + "\n" + subscription_summary
+        + "\n实时剩余可申购份额：未确认（公开清单不提供）。"
         + "\n证券账户买卖与下列一级申购分开，暂停申购不等于停牌。"
     )
-    if expected != now.date():
-        summary += f"\n以下为 {expected:%m-%d} 额度，不代表今天可申购份额。"
+    if subscription_date != now.date():
+        summary += f"\n以下为 {subscription_date:%m-%d} 额度，不代表今天可申购份额。"
     if candidate_count > len(quotes):
         summary += "\n以下为部分产品。"
     if any(q.stale for q in quotes):
@@ -126,7 +128,8 @@ def build_cards(quotes: list[Quote], *, candidate_count: int, now: datetime,
                     "template": "blue",
                 },
                 "elements": [_div(summary)] + [
-                    _row(q, i + 1, expected) for i, q in enumerate(quotes[start:stop], start)
+                    _row(q, i + 1, subscription_date)
+                    for i, q in enumerate(quotes[start:stop], start)
                 ],
             },
         }

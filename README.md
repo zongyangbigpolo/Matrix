@@ -213,7 +213,8 @@ ETF 策略最多10只的名额。每次从 TickFlow 当前 `CN_ETF` 元数据发
 发行份额或收盘价推算。仅对实际选中的ETF查询，不写入共享行情库。
 沪市使用 `https://query.sse.com.cn/etfDownload/downloadETF2Bulletin.do?fundCode={code}`，
 深市使用 `https://reportdocs.static.szse.cn/files/text/ETFDown/pcf_{code}_{YYYYMMDD}.xml`。
-严格核对清单代码、交易日和状态；日期要求为本次对应的境内交易日，周末清楚标注最近交易日，
+严格核对清单代码、交易日和状态；交易日上午使用**当天申购清单**，行情独立使用最近已收盘日，
+不能因行情是前一天而沿用前一天申购额度。周末清楚标注最近交易日，
 不把周五公布上限当成下周一可用额度。每次重新请求，无旧额度缓存。
 
 每只基金优先列**一级申购状态、单账户上限、基金整体上限、最小申购单位**，单位均为“份”；
@@ -237,8 +238,8 @@ ETF 策略最多10只的名额。每次从 TickFlow 当前 `CN_ETF` 元数据发
 默认按北京时间跳过周末及 `CN_MARKET_HOLIDAYS`，与现有交易日工具一致，
 **不是完整交易所节假日日历**；可用 `--force` 手工覆盖。
 可选路由 `STRATEGY_WEBHOOK_US_ETF`，不配置则使用默认飞书群，与场外
-`STRATEGY_WEBHOOK_FUND_US` 分开。计划时间为周一至周五 **18:45 Asia/Shanghai**，
-早于通用 ETF 的19:15；`Persistent=false` 不补发漏跑清单。
+`STRATEGY_WEBHOOK_FUND_US` 分开。计划时间为周一至周五 **09:35 Asia/Shanghai**，
+用于当日申购查询；场外基金09:30、通用ETF策略19:15不变。`Persistent=false` 不补发漏跑清单。
 runner遵循 `MATRIX_ETF_HOME` / `MATRIX_ETF_LOCK_FILE`，与通用ETF和更新器
 共用 `.matrix_etf.lock`，锁忙跳过，不新增第六个业务锁。直接调用Python不持锁；
 服务器上请总是使用runner。

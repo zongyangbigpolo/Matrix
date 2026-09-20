@@ -219,6 +219,9 @@ def test_source_reuses_tables_and_only_reads_current_bounded_window(live_source,
     assert args == ([PRODUCT.symbol],)
     assert kwargs["count"] == 30 and kwargs["max_workers"] == 1
     assert kwargs["adjust"] == "forward"
+    assert kwargs["end_time"] == int(
+        datetime(2026, 9, 18, 23, 59, 59, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp() * 1000
+    )
     with sqlite3.connect(instance.engine.db_path) as conn:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert tables == {"etf_daily", "etf_basic", "etf_metrics", "sqlite_sequence"}
@@ -379,8 +382,9 @@ def test_subscription_caps_keep_scope_units_and_effective_date():
     assert "最小申购单位：130万份" in text
     assert "当日单户上限：累计申购130万份" in text
     assert "当日基金整体上限：净申购3600万份" in text
-    assert "09-18：当日公布上限，非实时剩余" in text
+    assert "09-18：当日公布上限" in text
     assert "实时剩余可申购份额：未确认" in text
+    assert text.count("实时剩余可申购份额：未确认") == 1
     assert "暂停申购不等于停牌" in text
     assert "不限" not in text and "¥" not in text
 
@@ -473,6 +477,24 @@ def test_cli_attaches_verified_exchange_quota_before_rendering(cli, capsys, monk
     assert "单户上限：累计申购50万份" in capsys.readouterr().out
 
 
+def test_morning_cli_uses_today_quota_and_previous_close(cli, capsys, monkeypatch):
+    factory, _ = cli
+    previous = date(2026, 9, 17)
+    factory.return_value.fetch.return_value = [Quote(PRODUCT, previous, 11)]
+    monkeypatch.setattr(us_etf_main, "shanghai_now", lambda: NOW.replace(hour=9, minute=35))
+    quota = CreationQuota(effective_date=DAY, status="open",
+                          account_cumulative=Decimal("500000"))
+    fetch = MagicMock(return_value={PRODUCT.symbol: quota})
+    monkeypatch.setattr(us_etf_main, "fetch_quotas", fetch)
+    assert us_etf_main.main(["--dry-run"]) == 0
+    factory.return_value.fetch.assert_called_once_with(previous)
+    fetch.assert_called_once_with([PRODUCT.symbol], DAY)
+    text = capsys.readouterr().out
+    assert "收盘日 2026-09-17" in text and "申购额度对应 09-18" in text
+    assert "单户上限：累计申购50万份" in text
+    assert "不代表今天" not in text and "数据滞后" not in text
+
+
 def test_failed_delivery_returns_nonzero(cli):
     _, notifier = cli
     notifier.return_value.send_card.return_value = False
@@ -560,7 +582,7 @@ def test_job_schedule_and_resource_bounds():
     timer = (root / "deploy/systemd/matrix-us-etf.timer").read_text()
     service = (root / "deploy/systemd/matrix-us-etf.service").read_text()
     runner = (root / "scripts/run_us_etf.sh").read_text()
-    assert "OnCalendar=Mon..Fri 18:45:00 Asia/Shanghai" in timer
+    assert "OnCalendar=Mon..Fri 09:35:00 Asia/Shanghai" in timer
     assert "Persistent=false" in timer
     for value in ("TimeoutStartSec=15min", "MemoryMax=256M", "MemorySwapMax=64M",
                   "Nice=15", "IOSchedulingClass=idle"):

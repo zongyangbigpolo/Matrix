@@ -156,14 +156,19 @@ def parse_quota(
         return _unknown(symbol, source_url, str(exc), effective_date)
 
 
-def _download(url: str) -> bytes:
-    deadline = time.monotonic() + REQUEST_DEADLINE
+def _download(url: str, deadline: float | None = None) -> bytes:
+    if deadline is None:
+        deadline = time.monotonic() + REQUEST_DEADLINE
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise _QuotaError("request-deadline-exceeded")
+    timeout = tuple(min(limit, remaining / 2) for limit in REQUEST_TIMEOUT)
     with requests.Session() as session:
         # Public endpoints only: no .netrc credentials or environment proxies.
         session.trust_env = False
         with session.get(
             url,
-            timeout=REQUEST_TIMEOUT,
+            timeout=timeout,
             allow_redirects=False,
             stream=True,
             headers={"Accept": "application/xml", "Referer": "https://www.sse.com.cn/"},
@@ -194,16 +199,28 @@ def _fetch_one(symbol: str, expected: date) -> CreationQuota:
     url = ""
     try:
         url = _source_url(symbol, expected)
-        content = _download(url)
     except _QuotaError as exc:
         return _unknown(symbol, url, str(exc))
-    except requests.RequestException:
-        return _unknown(symbol, url, "request-failed")
-    return parse_quota(content, symbol, expected, url)
+    deadline = time.monotonic() + REQUEST_DEADLINE
+    for attempt in range(2):
+        try:
+            content = _download(url, deadline=deadline)
+        except _QuotaError as exc:
+            return _unknown(symbol, url, str(exc))
+        except (requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError):
+            if time.monotonic() >= deadline:
+                return _unknown(symbol, url, "request-deadline-exceeded")
+            if attempt == 1:
+                return _unknown(symbol, url, "request-failed")
+            logger.warning("ETF PCF transport failure for %s; retrying once", symbol)
+            continue
+        except requests.RequestException:
+            return _unknown(symbol, url, "request-failed")
+        return parse_quota(content, symbol, expected, url)
 
 
 def fetch_quotas(symbols: list[str], expected: date) -> dict[str, CreationQuota]:
-    """Fetch at most 50 selected symbols without retries, redirects, or a cache."""
+    """Fetch at most 50 symbols, with one transport retry inside each 20s budget."""
     if len(symbols) > MAX_SYMBOLS:
         return {symbol: _unknown(symbol, "", "too-many-symbols") for symbol in symbols}
     if not symbols:
