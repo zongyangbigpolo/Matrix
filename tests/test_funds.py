@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
@@ -10,7 +11,7 @@ import pytest
 
 import fund_main
 from matrix_etf.core.config import Settings
-from matrix_etf.funds.card import _fund_name_and_class, build_card
+from matrix_etf.funds.card import MAX_CARD_BYTES, _fund_name_and_class, build_card, build_cards
 from matrix_etf.funds.catalog import load_catalog, parse_candidates, us_index_category
 from matrix_etf.funds.monitor import select_funds
 from matrix_etf.funds.source import FundQuote, FundSourceError
@@ -93,23 +94,25 @@ def test_missing_codes_are_surfaced_and_all_missing_is_failure():
         select_funds([("270042",)], {})
 
 
-def test_ten_product_cap_ordering_and_no_share_class_limit_addition():
+@pytest.mark.parametrize("count", [13, 50, 53])
+def test_fifty_product_cap_ordering_and_no_share_class_limit_addition(count):
     catalog = []
     quotes = {}
-    for i in range(12):
+    for i in range(count):
         codes = (f"{i * 2 + 1:06}", f"{i * 2 + 2:06}")
         catalog.append(codes)
         for code in codes:
             quotes[code] = quote(code, minimum=Decimal(1), daily_limit=Decimal(i + 1))
     result = select_funds(catalog, quotes)
-    assert len(result.groups) == 10
-    assert result.eligible_groups == 12
-    assert result.eligible_shares == 24
-    assert result.single_share_total == Decimal("78")
-    assert result.category_totals[0].products == 12
-    assert result.category_totals[0].daily_limit == Decimal("78")
-    assert result.groups[0][0].daily_limit == 12
-    assert result.groups[-1][0].daily_limit == 3
+    assert len(result.groups) == min(count, 50)
+    assert result.eligible_groups == count
+    assert result.eligible_shares == count * 2
+    total = Decimal(count * (count + 1) // 2)
+    assert result.single_share_total == total
+    assert result.category_totals[0].products == count
+    assert result.category_totals[0].daily_limit == total
+    assert result.groups[0][0].daily_limit == count
+    assert result.groups[-1][0].daily_limit == max(1, count - 49)
     assert all(len(group) == 2 for group in result.groups)
     assert select_funds(catalog[::-1], quotes) == result
     smaller = select_funds(catalog, quotes, 2)
@@ -118,7 +121,7 @@ def test_ten_product_cap_ordering_and_no_share_class_limit_addition():
     assert smaller.category_totals == result.category_totals
 
 
-@pytest.mark.parametrize("limit", [0, 11, -1, True, 1.5])
+@pytest.mark.parametrize("limit", [0, 51, -1, True, 1.5])
 def test_invalid_recommendation_limit(limit):
     with pytest.raises(ValueError):
         select_funds([("270042",)], {"270042": quote()}, limit)
@@ -213,6 +216,56 @@ def test_empty_card_is_explicit_and_does_not_make_up_candidates():
     assert "纳斯达克合计：¥0 · 0只基金" in text
     assert selected.single_share_total == 0 and not selected.category_totals
     assert card["card"]["header"]["template"] == "orange"
+    assert build_cards(selected, datetime.now(ZoneInfo("Asia/Shanghai")))
+
+
+def test_thirteen_products_fit_one_card_without_hidden_funds():
+    codes = [f"{i:06}" for i in range(1, 14)]
+    selected = select_funds([(code,) for code in codes], {code: quote(code) for code in codes})
+    cards = build_cards(selected, datetime.now(ZoneInfo("Asia/Shanghai")))
+    assert len(cards) == 1
+    text = json.dumps(cards, ensure_ascii=False)
+    assert "展示13只" in text and "未展开" not in text
+    for code in codes:
+        assert f"/{code}.html" in text
+
+
+def test_fifty_large_products_are_paged_without_losing_groups_or_shares():
+    catalog = []
+    quotes = {}
+    for i in range(50):
+        codes = tuple(f"{i * 6 + j + 1:06}" for j in range(6))
+        catalog.append(codes)
+        for j, code in enumerate(codes):
+            quotes[code] = quote(
+                code, name="测试" * 80 + "纳斯达克100" + "ACDEFI"[j],
+                daily_limit=Decimal(j + 2),
+            )
+    selected = select_funds(catalog, quotes)
+    cards = build_cards(selected, datetime.now(ZoneInfo("Asia/Shanghai")), "周末")
+    assert len(cards) > 1
+    indices = []
+    for card in cards:
+        assert len(json.dumps(card).encode("utf-8")) <= MAX_CARD_BYTES
+        text = json.dumps(card, ensure_ascii=False)
+        assert "美股总计：¥350 · 50只基金" in text
+        assert "共展示50只（分条发送）" in text
+        assert "未展开" not in text and "周末" in text
+        for element in card["card"]["elements"]:
+            match = re.match(r"\*\*(\d+)\. \[", element.get("text", {}).get("content", ""))
+            if match:
+                indices.append(int(match[1]))
+    assert indices == list(range(1, 51))
+    text = json.dumps(cards, ensure_ascii=False)
+    for code in quotes:
+        assert f"/{code}.html" in text
+
+
+def test_one_oversized_product_fails_explicitly(monkeypatch):
+    selected = select_funds([("270042",)], {"270042": quote()})
+    monkeypatch.setattr("matrix_etf.funds.card.MAX_CARD_BYTES", 100)
+    with pytest.raises(ValueError, match="One fund product exceeds"):
+        build_cards(selected, datetime.now(ZoneInfo("Asia/Shanghai")))
 
 
 def test_discovery_proposes_only_new_eligible_names_without_auto_approval():
@@ -276,6 +329,38 @@ def test_cli_delivery_failure_exits_nonzero(cli):
     catalog, notifier, fetch = cli
     notifier.send_card.return_value = False
     assert fund_main.main(["--catalog", str(catalog)]) == 1
+
+
+@pytest.mark.parametrize("count", [13, 50, 53])
+def test_cli_funds_ignore_stock_limit_and_send_all_selected_products(cli, count):
+    catalog, notifier, fetch = cli
+    codes = [f"{i:06}" for i in range(1, count + 1)]
+    catalog.write_text(json.dumps({"version": 1, "groups": [[code] for code in codes]}))
+    fetch.return_value = {code: quote(code) for code in codes}
+    fund_main.get_settings().recommendation_limit = 1
+    assert fund_main.main(["--catalog", str(catalog)]) == 0
+    cards = [call.args[0] for call in notifier.send_card.call_args_list]
+    for card in cards:
+        assert len(json.dumps(card).encode("utf-8")) <= MAX_CARD_BYTES
+    text = json.dumps(cards, ensure_ascii=False)
+    for code in codes[:50]:
+        assert f"/{code}.html" in text
+    for code in codes[50:]:
+        assert f"/{code}.html" not in text
+    assert fund_main.get_settings().recommendation_limit == 1
+    assert Settings(_env_file=None, feishu_webhook_url="").recommendation_limit == 10
+    fetch.assert_called_once()
+
+
+def test_cli_stops_and_reports_partial_delivery_failure(cli, monkeypatch):
+    catalog, notifier, fetch = cli
+    codes = [f"{i:06}" for i in range(1, 51)]
+    catalog.write_text(json.dumps({"version": 1, "groups": [[code] for code in codes]}))
+    fetch.return_value = {code: quote(code) for code in codes}
+    monkeypatch.setattr("matrix_etf.funds.card.MAX_CARD_BYTES", 3000)
+    notifier.send_card.side_effect = [True, False]
+    assert fund_main.main(["--catalog", str(catalog)]) == 1
+    assert notifier.send_card.call_count == 2
 
 
 def test_discovery_does_not_rewrite_catalog_or_send_an_empty_update(cli, monkeypatch):

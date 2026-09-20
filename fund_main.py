@@ -16,7 +16,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 from matrix_etf.core.config import Settings, get_settings  # noqa: E402
 from matrix_etf.core.logger import get_logger  # noqa: E402
 from matrix_etf.core.trading_calendar import get_non_trading_day_reason  # noqa: E402
-from matrix_etf.funds.card import build_card, build_discovery_card  # noqa: E402
+from matrix_etf.funds.card import MAX_CARD_BYTES, build_cards, build_discovery_card  # noqa: E402
 from matrix_etf.funds.catalog import load_catalog, parse_candidates  # noqa: E402
 from matrix_etf.funds.monitor import select_funds  # noqa: E402
 from matrix_etf.funds.source import (  # noqa: E402
@@ -52,12 +52,12 @@ def main(argv: list[str] | None = None) -> int:
                 logger.info("基金目录检查完成：没有新的待核验候选")
                 return 0
             fetched_at = datetime.now(ZoneInfo("Asia/Shanghai"))
-            payload = build_discovery_card(candidates, fetched_at)
+            payloads = [build_discovery_card(candidates, fetched_at)]
         else:
             quotes = fetch_quotes(codes, **kwargs)
             fetched_at = datetime.now(ZoneInfo("Asia/Shanghai"))
-            selected = select_funds(catalog, quotes, settings.recommendation_limit)
-            payload = build_card(
+            selected = select_funds(catalog, quotes)
+            payloads = build_cards(
                 selected, fetched_at,
                 get_non_trading_day_reason(fetched_at.date(), settings),
             )
@@ -67,13 +67,17 @@ def main(argv: list[str] | None = None) -> int:
                 f"待核实{len(selected.unknown)}类份额"
             )
         # Feishu custom bots limit request bodies to 20 KiB.
-        if len(json.dumps(payload).encode("utf-8")) > 20 * 1024:
+        if any(len(json.dumps(payload).encode("utf-8")) > MAX_CARD_BYTES for payload in payloads):
             raise ValueError("Fund card exceeds Feishu's 20 KiB body limit")
         if args.dry_run:
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
-        elif not notifier.send_card(payload, webhook_key="fund_us"):
-            logger.error("基金清单飞书推送失败")
-            return 1
+            print(json.dumps(
+                payloads[0] if len(payloads) == 1 else payloads, ensure_ascii=False, indent=2,
+            ))
+        else:
+            for page, payload in enumerate(payloads, 1):
+                if not notifier.send_card(payload, webhook_key="fund_us"):
+                    logger.error(f"基金清单飞书推送失败：第{page}/{len(payloads)}条")
+                    return 1
         return 0
     except (FundSourceError, OSError, ValueError) as exc:
         logger.error(f"基金监控失败：{exc}")

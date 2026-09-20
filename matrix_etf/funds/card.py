@@ -1,12 +1,16 @@
 """Fund-specific Feishu links and clearly labelled public channel limits."""
 
 import html
+import json
 import re
 import unicodedata
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 
 from matrix_etf.funds.monitor import FundSelection
+
+MAX_CARD_BYTES = 20 * 1024
 
 
 def _escape(text: str) -> str:
@@ -41,8 +45,11 @@ def _fund_name_and_class(name: str) -> tuple[str, str]:
 
 
 def build_card(
-    selection: FundSelection, fetched_at: datetime, calendar_note: str | None = None
+    selection: FundSelection, fetched_at: datetime, calendar_note: str | None = None,
+    *, offset: int = 0, displayed_count: int | None = None,
 ) -> dict:
+    if displayed_count is None:
+        displayed_count = len(selection.groups)
     summary = [
         f"天天基金 · {fetched_at:%m-%d %H:%M} 更新（北京时间）",
         "**今日可买 · 单日额度 / 基金数量**",
@@ -68,12 +75,17 @@ def build_card(
     if not selection.groups:
         elements.append(_div("今天没有查到额度明确、可申购的基金。"))
     else:
-        hidden = selection.eligible_groups - len(selection.groups)
+        hidden = selection.eligible_groups - displayed_count
         listing = f"**额度从高到低 · 展示{len(selection.groups)}只**"
+        if displayed_count != len(selection.groups):
+            listing = (
+                f"**额度从高到低 · 第{offset + 1}-{offset + len(selection.groups)}只"
+                f" / 共展示{displayed_count}只（分条发送）**"
+            )
         if hidden:
             listing += f"\n另{hidden}只未展开，已计入顶部总数和额度。"
         elements.append(_div(listing))
-    for index, group in enumerate(selection.groups, 1):
+    for index, group in enumerate(selection.groups, offset + 1):
         name, _ = _fund_name_and_class(group[0].name)
         url = f"https://fund.eastmoney.com/{group[0].code}.html"
         lines = [f"**{index}. [{_escape(name)}]({url})**"]
@@ -109,6 +121,35 @@ def build_card(
             "elements": elements,
         },
     }
+
+
+def build_cards(
+    selection: FundSelection, fetched_at: datetime, calendar_note: str | None = None,
+) -> list[dict]:
+    card = build_card(selection, fetched_at, calendar_note)
+    if len(json.dumps(card).encode("utf-8")) <= MAX_CARD_BYTES:
+        return [card]
+    cards = []
+    start = 0
+    while start < len(selection.groups):
+        page = None
+        end = start
+        for stop in range(start + 1, len(selection.groups) + 1):
+            candidate = build_card(
+                replace(selection, groups=selection.groups[start:stop]),
+                fetched_at, calendar_note, offset=start,
+                displayed_count=len(selection.groups),
+            )
+            if len(json.dumps(candidate).encode("utf-8")) > MAX_CARD_BYTES:
+                break
+            page, end = candidate, stop
+        if page is None:
+            raise ValueError("One fund product exceeds Feishu's 20 KiB body limit")
+        cards.append(page)
+        start = end
+    if not cards:
+        raise ValueError("Fund summary exceeds Feishu's 20 KiB body limit")
+    return cards
 
 
 def build_discovery_card(candidates: list[dict[str, str]], fetched_at: datetime) -> dict:

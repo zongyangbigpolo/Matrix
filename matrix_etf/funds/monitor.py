@@ -10,6 +10,7 @@ OPEN_STATUSES = {"开放申购", "限大额"}
 CLOSED_STATUSES = {"暂停申购", "场内交易", "封闭期", "认购期"}
 # The source uses very large placeholder values; their unlimited meaning is undocumented.
 UNCERTAIN_LIMIT = Decimal("100000000000")
+FUND_PRODUCT_LIMIT = 50
 
 
 @dataclass(frozen=True)
@@ -32,10 +33,11 @@ class FundSelection:
 
 
 def select_funds(
-    catalog: list[tuple[str, ...]], quotes: dict[str, FundQuote], limit: int = 10
+    catalog: list[tuple[str, ...]], quotes: dict[str, FundQuote], limit: int = FUND_PRODUCT_LIMIT
 ) -> FundSelection:
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10:
-        raise ValueError("Fund recommendation limit must be between 1 and 10")
+    if (isinstance(limit, bool) or not isinstance(limit, int)
+            or not 1 <= limit <= FUND_PRODUCT_LIMIT):
+        raise ValueError(f"Fund product limit must be between 1 and {FUND_PRODUCT_LIMIT}")
     codes = {code for group in catalog for code in group}
     if not codes or not codes.intersection(quotes):
         raise FundSourceError("The subscription response contains none of the approved fund codes")
