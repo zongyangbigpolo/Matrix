@@ -136,7 +136,8 @@ def test_card_links_summary_and_fund_name_escaping():
     text = json.dumps(card, ensure_ascii=False)
     assert "https://fund.10jqka.com.cn/270042/" in text
     assert "xueqiu.com" not in text
-    assert "每日可申购 **¥2**" in text
+    assert "当日申购上限 **¥2**" in text
+    assert "个人今日剩余额度以交易页为准" in text
     assert "美股总计：¥2 · 1只基金" in text
     assert "同一基金各份额取最高额度汇总" in text
     assert "场外申购" in text
@@ -205,8 +206,8 @@ def test_different_share_class_limits_are_not_hidden_or_added():
     text = json.dumps(build_card(selected, datetime.now(ZoneInfo("Asia/Shanghai"))), ensure_ascii=False)
     assert "[A类 000001](https://fund.10jqka.com.cn/000001/)" in text
     assert "[C类 000002](https://fund.10jqka.com.cn/000002/)" in text
-    assert "每日可申购 ¥100 · ¥1起" in text
-    assert "每日可申购 ¥200 · ¥10起" in text
+    assert "当日申购上限 ¥100 · ¥1起" in text
+    assert "当日申购上限 ¥200 · ¥10起" in text
     assert "¥300" not in text
 
 

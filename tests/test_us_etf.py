@@ -377,9 +377,10 @@ def test_subscription_caps_keep_scope_units_and_effective_date():
                                  candidate_count=1, now=NOW, expected=DAY), ensure_ascii=False)
     assert "一级申购：开放" in text
     assert "最小申购单位：130万份" in text
-    assert "单户上限：累计申购130万份" in text
-    assert "基金整体上限：净申购3600万份" in text
-    assert "09-18 清单公布上限，非实时剩余" in text
+    assert "当日单户上限：累计申购130万份" in text
+    assert "当日基金整体上限：净申购3600万份" in text
+    assert "09-18：当日公布上限，非实时剩余" in text
+    assert "实时剩余可申购份额：未确认" in text
     assert "暂停申购不等于停牌" in text
     assert "不限" not in text and "¥" not in text
 
@@ -406,6 +407,16 @@ def test_zero_and_missing_caps_do_not_become_unlimited_or_available_zero():
                                  candidate_count=1, now=NOW, expected=DAY), ensure_ascii=False)
     assert "单户上限：未确认" in text and "基金整体上限：未确认" in text
     assert "不限" not in text and "0份" not in text
+
+
+def test_weekend_quota_never_claims_available_today():
+    quota = CreationQuota(effective_date=DAY, status="open",
+                          account_cumulative=Decimal("1000000"))
+    sunday = NOW.replace(day=20)
+    text = json.dumps(build_cards([Quote(PRODUCT, subscription=quota)], candidate_count=1,
+                                 now=sunday, expected=DAY), ensure_ascii=False)
+    assert "09-18 额度，不代表今天可申购份额" in text
+    assert "实时剩余可申购份额：未确认" in text
 
 
 def test_quota_rich_fifty_products_keep_every_row_within_wire_limit():

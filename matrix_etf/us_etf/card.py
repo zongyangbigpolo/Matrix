@@ -43,8 +43,8 @@ def _subscription_lines(quote: Quote, expected: date) -> list[str]:
         return ["**一级申购：暂停申购**"]
     lines = ["**一级申购：开放**"]
     for label, cumulative, net in (
-        ("单户上限", quota.account_cumulative, quota.account_net),
-        ("基金整体上限", quota.fund_cumulative, quota.fund_net),
+        ("当日单户上限", quota.account_cumulative, quota.account_net),
+        ("当日基金整体上限", quota.fund_cumulative, quota.fund_net),
     ):
         limits = [
             f"{kind}{_shares(value)}"
@@ -56,6 +56,7 @@ def _subscription_lines(quote: Quote, expected: date) -> list[str]:
         lines.append(f"最小申购单位：{_shares(quota.creation_unit)}")
     else:
         lines.append("最小申购单位：未确认")
+    lines.append("实时剩余可申购份额：未确认")
     return lines
 
 
@@ -99,7 +100,7 @@ def build_cards(quotes: list[Quote], *, candidate_count: int, now: datetime,
         for q in quotes
     )
     subscription_summary = (
-        f"申购额度：交易所 {expected:%m-%d} 清单公布上限，非实时剩余。"
+        f"申购额度对应 {expected:%m-%d}：当日公布上限，非实时剩余。"
         if has_verified_quota else f"申购额度：未取得 {expected:%m-%d} 有效清单。"
     )
     summary = (
@@ -108,6 +109,8 @@ def build_cards(quotes: list[Quote], *, candidate_count: int, now: datetime,
         + "\n" + subscription_summary
         + "\n证券账户买卖与下列一级申购分开，暂停申购不等于停牌。"
     )
+    if expected != now.date():
+        summary += f"\n以下为 {expected:%m-%d} 额度，不代表今天可申购份额。"
     if candidate_count > len(quotes):
         summary += "\n以下为部分产品。"
     if any(q.stale for q in quotes):

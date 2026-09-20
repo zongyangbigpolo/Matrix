@@ -52,7 +52,7 @@ def build_card(
         displayed_count = len(selection.groups)
     summary = [
         f"天天基金 · {fetched_at:%m-%d %H:%M} 更新（北京时间）",
-        "**场外申购 · 每日额度 / 基金数量**",
+        "**场外申购 · 当日上限 / 基金数量**",
     ]
     for label, categories in (
         ("标普合计", {"标普500", "标普500等权"}),
@@ -66,6 +66,7 @@ def build_card(
         f"**美股总计：¥{_amount(selection.single_share_total)}"
         f" · {selection.eligible_groups}只基金**",
         "同一基金各份额取最高额度汇总；标普含等权。",
+        "渠道公布上限；个人今日剩余额度以交易页为准。",
     ])
     elements = [_div("\n".join(summary))]
     if calendar_note:
@@ -83,7 +84,7 @@ def build_card(
         same_terms = len({(quote.minimum, quote.daily_limit) for quote in group}) == 1
         if same_terms:
             lines.append(
-                f"每日可申购 **¥{_amount(group[0].daily_limit)}**"
+                f"当日申购上限 **¥{_amount(group[0].daily_limit)}**"
                 f" · ¥{_amount(group[0].minimum)}起购"
             )
         options = []
@@ -94,7 +95,7 @@ def build_card(
             option = f"[{label}]({url})"
             if not same_terms:
                 option += (
-                    f"：每日可申购 ¥{_amount(quote.daily_limit)}"
+                    f"：当日申购上限 ¥{_amount(quote.daily_limit)}"
                     f" · ¥{_amount(quote.minimum)}起"
                 )
             options.append(option)
