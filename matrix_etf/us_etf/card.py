@@ -4,6 +4,7 @@ import html
 import json
 from collections import Counter
 from datetime import date, datetime
+from decimal import Decimal
 
 from matrix_etf.us_etf.listing import CATEGORIES, Quote
 
@@ -21,33 +22,66 @@ def _div(text: str) -> dict:
     return {"tag": "div", "text": {"tag": "lark_md", "content": text}}
 
 
-def _row(quote: Quote, index: int) -> dict:
+def _shares(value: Decimal) -> str:
+    unit = "份"
+    if value >= Decimal("100000000"):
+        value, unit = value / Decimal("100000000"), "亿份"
+    elif value >= Decimal("10000"):
+        value, unit = value / Decimal("10000"), "万份"
+    number = format(value, "f")
+    if "." in number:
+        number = number.rstrip("0").rstrip(".")
+    return number + unit
+
+
+def _subscription_lines(quote: Quote, expected: date) -> list[str]:
+    quota = quote.subscription
+    if (quota is None or quota.status not in {"open", "suspended"}
+            or quota.effective_date != expected):
+        return ["**一级申购额度：未确认**"]
+    if quota.status == "suspended":
+        return ["**一级申购：暂停申购**"]
+    lines = ["**一级申购：开放**"]
+    for label, cumulative, net in (
+        ("单户上限", quota.account_cumulative, quota.account_net),
+        ("基金整体上限", quota.fund_cumulative, quota.fund_net),
+    ):
+        limits = [
+            f"{kind}{_shares(value)}"
+            for kind, value in (("累计申购", cumulative), ("净申购", net))
+            if value is not None and value > 0
+        ]
+        lines.append(f"{label}：" + (" · ".join(limits) if limits else "未确认"))
+    if quota.creation_unit is not None and quota.creation_unit > 0:
+        lines.append(f"最小申购单位：{_shares(quota.creation_unit)}")
+    else:
+        lines.append("最小申购单位：未确认")
+    return lines
+
+
+def _row(quote: Quote, index: int, expected: date) -> dict:
     product = quote.product
-    url = f"https://quote.eastmoney.com/{product.symbol[-2:].lower()}{product.symbol[:6]}.html"
+    code = product.symbol[:6]
+    url = f"https://fund.10jqka.com.cn/{code}/"
     lines = [
-        f"**{index}. [{_escape(product.name)}]({url})**",
-        f"{product.symbol} · {product.category}",
+        f"**{index}. {_escape(product.name)}**",
+        f"[{code}]({url}) · {product.category}",
     ]
-    if quote.trade_date:
-        lines.append(f"行情日 {quote.trade_date.isoformat()}" + (
-            " · **数据滞后，非本次应有收盘日**" if quote.stale else ""
-        ))
+    lines.extend(_subscription_lines(quote, expected))
+    if quote.trade_date and quote.stale:
+        lines.append(f"**数据滞后：{quote.trade_date.isoformat()} 收盘**")
     if quote.close is None:
         lines.append("**暂无行情（有效收盘价缺失）**")
     else:
-        lines.append(f"收盘 ¥{quote.close:.4f}")
+        lines.append(f"前复权收盘 ¥{quote.close:.4f}")
     if quote.change is None:
-        lines.append("涨跌幅：暂无（缺少有效对比收盘价）")
+        lines[-1] += " · 涨跌幅暂无"
     elif quote.previous_is_market_day:
-        lines.append(f"日涨跌幅 {quote.change:+.2f}%")
+        lines[-1] += f" · {quote.change:+.2f}%"
     else:
         lines.append(f"较上次有效收盘 {quote.change:+.2f}%（非单日涨跌幅）")
-    if quote.previous_date:
+    if quote.previous_date and not quote.previous_is_market_day:
         lines.append(f"对比日 {quote.previous_date.isoformat()}")
-    lines.append(
-        f"人民币成交额 ¥{quote.amount:,.2f}" if quote.amount is not None
-        else "人民币成交额：暂无"
-    )
     return _div("\n".join(lines))
 
 
@@ -58,13 +92,26 @@ def build_cards(quotes: list[Quote], *, candidate_count: int, now: datetime,
     date_label = "暂无行情日期" if not dates else (
         dates[0] if len(dates) == 1 else f"{dates[0]} 至 {dates[-1]}（逐只见明细）"
     )
-    summary = (
-        f"TickFlow 历史日线 · 查询 {now:%Y-%m-%d %H:%M}（北京时间）\n"
-        f"应有收盘日 {expected.isoformat()} · 实际行情日 {date_label}\n"
-        f"明确候选 {candidate_count} 只 · 展示 {len(quotes)} 只（最多50只）\n"
-        + " · ".join(f"{c} {counts[c]}只" for c in CATEGORIES)
-        + "\n按人民币成交额从高到低；前复权收盘行情，非实时。"
+    has_verified_quota = any(
+        q.subscription is not None
+        and q.subscription.effective_date == expected
+        and q.subscription.status in {"open", "suspended"}
+        for q in quotes
     )
+    subscription_summary = (
+        f"申购额度：交易所 {expected:%m-%d} 清单公布上限，非实时剩余。"
+        if has_verified_quota else f"申购额度：未取得 {expected:%m-%d} 有效清单。"
+    )
+    summary = (
+        f"{now:%m-%d %H:%M} 更新（北京时间） · 收盘日 {date_label}\n"
+        + " · ".join(f"{c} {counts[c]}只" for c in CATEGORIES)
+        + "\n" + subscription_summary
+        + "\n证券账户买卖与下列一级申购分开，暂停申购不等于停牌。"
+    )
+    if candidate_count > len(quotes):
+        summary += "\n以下为部分产品。"
+    if any(q.stale for q in quotes):
+        summary += f"\n应有收盘日 {expected.isoformat()}，滞后行情已逐只标注。"
 
     def page(start, stop):
         return {
@@ -72,12 +119,12 @@ def build_cards(quotes: list[Quote], *, candidate_count: int, now: datetime,
             "card": {
                 "header": {
                     "title": {"tag": "plain_text", "content":
-                              f"Matrix 境内美股 ETF 收盘行情 | {date_label}"},
+                              "美股 ETF · 场内交易"},
                     "template": "blue",
                 },
-                "elements": [_div(summary), _div(
-                    f"第 {start + 1}–{stop} 只 / 共 {len(quotes)} 只（分类数量为全清单）"
-                )] + [_row(q, i + 1) for i, q in enumerate(quotes[start:stop], start)],
+                "elements": [_div(summary)] + [
+                    _row(q, i + 1, expected) for i, q in enumerate(quotes[start:stop], start)
+                ],
             },
         }
 

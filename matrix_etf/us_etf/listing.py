@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 
 from matrix_etf.core.config import Settings
 from matrix_etf.core.trading_calendar import is_cn_trading_day
+from matrix_etf.us_etf.subscription import CreationQuota
 
 MAX_PRODUCTS = 50
 CATEGORIES = ("纳斯达克100", "标普500", "其他美股指数/行业")
@@ -45,6 +46,7 @@ class Quote:
     previous_date: date | None = None
     previous_is_market_day: bool = False
     stale: bool = False
+    subscription: CreationQuota | None = None
 
 
 def classify(info: dict) -> Product | None:

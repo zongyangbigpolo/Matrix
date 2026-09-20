@@ -6,6 +6,7 @@ import os
 import signal
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -24,6 +25,7 @@ from matrix_etf.notify.feishu import FeishuNotifier  # noqa: E402
 from matrix_etf.us_etf.card import build_cards  # noqa: E402
 from matrix_etf.us_etf.listing import expected_close_day, select_quotes  # noqa: E402
 from matrix_etf.us_etf.source import SourceError, USEtfSource  # noqa: E402
+from matrix_etf.us_etf.subscription import fetch_quotas  # noqa: E402
 
 logger = get_logger(__name__)
 
@@ -67,6 +69,10 @@ def main(argv: list[str] | None = None) -> int:
             source = USEtfSource(settings)
             quotes = source.fetch(expected)
             selected = select_quotes(quotes)
+            quotas = fetch_quotas([q.product.symbol for q in selected], expected)
+            selected = [
+                replace(q, subscription=quotas[q.product.symbol]) for q in selected
+            ]
             cards = build_cards(selected, candidate_count=len(quotes), now=now, expected=expected)
             logger.info(
                 f"境内美股 ETF 收盘清单：候选{len(quotes)}只，展示{len(selected)}只，"

@@ -52,7 +52,7 @@ def build_card(
         displayed_count = len(selection.groups)
     summary = [
         f"天天基金 · {fetched_at:%m-%d %H:%M} 更新（北京时间）",
-        "**今日可买 · 单日额度 / 基金数量**",
+        "**场外申购 · 每日额度 / 基金数量**",
     ]
     for label, categories in (
         ("标普合计", {"标普500", "标普500等权"}),
@@ -65,7 +65,7 @@ def build_card(
     summary.extend([
         f"**美股总计：¥{_amount(selection.single_share_total)}"
         f" · {selection.eligible_groups}只基金**",
-        "每只基金只选一个份额，按最高额度统计；标普包含等权基金。",
+        "同一基金各份额取最高额度汇总；标普含等权。",
     ])
     elements = [_div("\n".join(summary))]
     if calendar_note:
@@ -74,36 +74,27 @@ def build_card(
         ))
     if not selection.groups:
         elements.append(_div("今天没有查到额度明确、可申购的基金。"))
-    else:
-        hidden = selection.eligible_groups - displayed_count
-        listing = f"**额度从高到低 · 展示{len(selection.groups)}只**"
-        if displayed_count != len(selection.groups):
-            listing = (
-                f"**额度从高到低 · 第{offset + 1}-{offset + len(selection.groups)}只"
-                f" / 共展示{displayed_count}只（分条发送）**"
-            )
-        if hidden:
-            listing += f"\n另{hidden}只未展开，已计入顶部总数和额度。"
-        elements.append(_div(listing))
+    elif selection.eligible_groups > displayed_count:
+        elements.append(_div("以下为部分可申购基金，顶部合计包含全部可申购产品。"))
     for index, group in enumerate(selection.groups, offset + 1):
         name, _ = _fund_name_and_class(group[0].name)
-        url = f"https://fund.eastmoney.com/{group[0].code}.html"
+        url = f"https://fund.10jqka.com.cn/{group[0].code}/"
         lines = [f"**{index}. [{_escape(name)}]({url})**"]
         same_terms = len({(quote.minimum, quote.daily_limit) for quote in group}) == 1
         if same_terms:
             lines.append(
-                f"每日上限 **¥{_amount(group[0].daily_limit)}**"
+                f"每日可申购 **¥{_amount(group[0].daily_limit)}**"
                 f" · ¥{_amount(group[0].minimum)}起购"
             )
         options = []
         for quote in group:
-            url = f"https://fund.eastmoney.com/{quote.code}.html"
+            url = f"https://fund.10jqka.com.cn/{quote.code}/"
             _, share_class = _fund_name_and_class(quote.name)
             label = f"{share_class}类 {quote.code}" if share_class else quote.code
             option = f"[{label}]({url})"
             if not same_terms:
                 option += (
-                    f"：每日 ¥{_amount(quote.daily_limit)}"
+                    f"：每日可申购 ¥{_amount(quote.daily_limit)}"
                     f" · ¥{_amount(quote.minimum)}起"
                 )
             options.append(option)
@@ -115,7 +106,7 @@ def build_card(
         "msg_type": "interactive",
         "card": {
             "header": {
-                "title": {"tag": "plain_text", "content": "Matrix 美股基金申购清单 | 天天基金"},
+                "title": {"tag": "plain_text", "content": "美股基金 · 场外申购 | 天天基金"},
                 "template": "turquoise" if selection.groups else "orange",
             },
             "elements": elements,
@@ -154,20 +145,19 @@ def build_cards(
 
 def build_discovery_card(candidates: list[dict[str, str]], fetched_at: datetime) -> dict:
     lines = [
-        f"查询时间：{fetched_at:%Y-%m-%d %H:%M:%S %Z}",
-        f"发现 {len(candidates)} 类未纳入目录的候选份额，最多展示10类。",
-        "**仅为目录待审核候选，未确认申购状态、币种条款和限额，不是可买清单。**",
+        f"{fetched_at:%m-%d %H:%M} 更新（北京时间）",
+        "**待核验新增基金：申购状态及额度尚未确认，不列入可申购清单。**",
     ]
     for candidate in candidates[:10]:
         lines.append(
-            f"[{_escape(candidate['name'])}]"
-            f"(https://fund.eastmoney.com/{candidate['code']}.html)（{candidate['code']}）"
+            f"[{candidate['code']}](https://fund.10jqka.com.cn/{candidate['code']}/)"
+            f" · {_escape(candidate['name'])}"
         )
     return {
         "msg_type": "interactive",
         "card": {
             "header": {
-                "title": {"tag": "plain_text", "content": "Matrix 美股基金目录 | 待核验新增"},
+                "title": {"tag": "plain_text", "content": "美股基金 · 待核验新增"},
                 "template": "orange",
             },
             "elements": [_div("\n".join(lines))],

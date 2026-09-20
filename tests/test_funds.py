@@ -134,11 +134,12 @@ def test_card_links_summary_and_fund_name_escaping():
         selected, datetime(2026, 9, 19, 9, 30, tzinfo=ZoneInfo("Asia/Shanghai")), "周末"
     )
     text = json.dumps(card, ensure_ascii=False)
-    assert "https://fund.eastmoney.com/270042.html" in text
+    assert "https://fund.10jqka.com.cn/270042/" in text
     assert "xueqiu.com" not in text
-    assert "每日上限 **¥2**" in text
+    assert "每日可申购 **¥2**" in text
     assert "美股总计：¥2 · 1只基金" in text
-    assert "每只基金只选一个份额，按最高额度统计" in text
+    assert "同一基金各份额取最高额度汇总" in text
+    assert "场外申购" in text
     assert "标普合计：¥0 · 0只基金" in text
     assert "纳斯达克合计：¥2 · 1只基金" in text
     assert "周末" in text
@@ -146,6 +147,7 @@ def test_card_links_summary_and_fund_name_escaping():
     for boilerplate in (
         "额度不是个人剩余额度", "不可相加", "公开入口无稳定性", "单笔限制",
         "不是买入建议", "汇率", "最终以实际交易页面", "非规则生效时间",
+        "最多", "展示", "分条发送", "未展开",
     ):
         assert boilerplate not in text
 
@@ -188,7 +190,7 @@ def test_summary_covers_hidden_products_and_category_totals():
     assert "标普合计：¥30 · 2只基金" in text
     assert "纳斯达克合计：¥100 · 1只基金" in text
     assert text.index("标普合计") < text.index("纳斯达克合计") < text.index("美股总计")
-    assert "另2只未展开，已计入顶部总数和额度" in text
+    assert "部分可申购基金，顶部合计包含全部可申购产品" in text
     assert "9999" not in text and "9,999" not in text
     assert "另有1个份额信息未确认" in text
 
@@ -201,8 +203,10 @@ def test_different_share_class_limits_are_not_hidden_or_added():
     selected = select_funds([("000001", "000002")], quotes)
     assert selected.single_share_total == Decimal("200")
     text = json.dumps(build_card(selected, datetime.now(ZoneInfo("Asia/Shanghai"))), ensure_ascii=False)
-    assert "A类 000001" in text and "每日 ¥100 · ¥1起" in text
-    assert "C类 000002" in text and "每日 ¥200 · ¥10起" in text
+    assert "[A类 000001](https://fund.10jqka.com.cn/000001/)" in text
+    assert "[C类 000002](https://fund.10jqka.com.cn/000002/)" in text
+    assert "每日可申购 ¥100 · ¥1起" in text
+    assert "每日可申购 ¥200 · ¥10起" in text
     assert "¥300" not in text
 
 
@@ -225,9 +229,9 @@ def test_thirteen_products_fit_one_card_without_hidden_funds():
     cards = build_cards(selected, datetime.now(ZoneInfo("Asia/Shanghai")))
     assert len(cards) == 1
     text = json.dumps(cards, ensure_ascii=False)
-    assert "展示13只" in text and "未展开" not in text
+    assert "13只基金" in text and "展示" not in text and "未展开" not in text
     for code in codes:
-        assert f"/{code}.html" in text
+        assert f"https://fund.10jqka.com.cn/{code}/" in text
 
 
 def test_fifty_large_products_are_paged_without_losing_groups_or_shares():
@@ -249,7 +253,7 @@ def test_fifty_large_products_are_paged_without_losing_groups_or_shares():
         assert len(json.dumps(card).encode("utf-8")) <= MAX_CARD_BYTES
         text = json.dumps(card, ensure_ascii=False)
         assert "美股总计：¥350 · 50只基金" in text
-        assert "共展示50只（分条发送）" in text
+        assert "展示" not in text and "分条发送" not in text
         assert "未展开" not in text and "周末" in text
         for element in card["card"]["elements"]:
             match = re.match(r"\*\*(\d+)\. \[", element.get("text", {}).get("content", ""))
@@ -258,7 +262,7 @@ def test_fifty_large_products_are_paged_without_losing_groups_or_shares():
     assert indices == list(range(1, 51))
     text = json.dumps(cards, ensure_ascii=False)
     for code in quotes:
-        assert f"/{code}.html" in text
+        assert f"https://fund.10jqka.com.cn/{code}/" in text
 
 
 def test_one_oversized_product_fails_explicitly(monkeypatch):
@@ -344,9 +348,9 @@ def test_cli_funds_ignore_stock_limit_and_send_all_selected_products(cli, count)
         assert len(json.dumps(card).encode("utf-8")) <= MAX_CARD_BYTES
     text = json.dumps(cards, ensure_ascii=False)
     for code in codes[:50]:
-        assert f"/{code}.html" in text
+        assert f"https://fund.10jqka.com.cn/{code}/" in text
     for code in codes[50:]:
-        assert f"/{code}.html" not in text
+        assert f"https://fund.10jqka.com.cn/{code}/" not in text
     assert fund_main.get_settings().recommendation_limit == 1
     assert Settings(_env_file=None, feishu_webhook_url="").recommendation_limit == 10
     fetch.assert_called_once()

@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 from dataclasses import replace
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
@@ -19,6 +20,7 @@ from matrix_etf.us_etf.card import MAX_CARD_BYTES, build_cards
 from matrix_etf.us_etf.listing import (
     CATEGORIES, Product, Quote, classify, expected_close_day, make_quote, select_quotes,
 )
+from matrix_etf.us_etf.subscription import CreationQuota
 
 NOW = datetime(2026, 9, 18, 18, 45, tzinfo=ZoneInfo("Asia/Shanghai"))
 DAY = NOW.date()
@@ -347,19 +349,81 @@ def test_cards_actual_wire_bytes_links_and_no_lost_rows(count):
         assert len(cards) > 1
     text = json.dumps(cards, ensure_ascii=False)
     for quote in quotes:
-        assert text.count(f"https://quote.eastmoney.com/sh{quote.product.symbol[:6]}.html") == 1
-    assert "收盘行情" in text and "数据滞后" in text and "非单日涨跌幅" in text
+        code = quote.product.symbol[:6]
+        assert text.count(f"[{code}](https://fund.10jqka.com.cn/{code}/)") == 1
+    assert "场内交易" in text and "数据滞后" in text and "非单日涨跌幅" in text
     assert "&lt;&amp;&gt;" in text and "[伪链接](" not in text
     assert "可买额度" not in text and "推荐买入" not in text
-    assert "前复权收盘行情，非实时" in text
+    assert "前复权收盘" in text
     assert "不构成交易建议" not in text
+    for boilerplate in ("最多", "明确候选", "展示", "全清单", "人民币成交额"):
+        assert boilerplate not in text
 
 
 def test_missing_quote_card_does_not_invent_values():
     text = json.dumps(build_cards([Quote(PRODUCT)], candidate_count=1,
                                  now=NOW, expected=DAY), ensure_ascii=False)
-    assert "暂无行情" in text and "人民币成交额：暂无" in text
-    assert "¥0" not in text and "实际行情日 暂无行情日期" in text
+    assert "暂无行情" in text
+    assert "¥0" not in text and "收盘日 暂无行情日期" in text
+
+
+def test_subscription_caps_keep_scope_units_and_effective_date():
+    quota = CreationQuota(
+        effective_date=DAY, status="open", creation_unit=Decimal("1300000"),
+        fund_cumulative=Decimal("0"), fund_net=Decimal("36000000"),
+        account_cumulative=Decimal("1300000"),
+    )
+    text = json.dumps(build_cards([Quote(PRODUCT, subscription=quota)],
+                                 candidate_count=1, now=NOW, expected=DAY), ensure_ascii=False)
+    assert "一级申购：开放" in text
+    assert "最小申购单位：130万份" in text
+    assert "单户上限：累计申购130万份" in text
+    assert "基金整体上限：净申购3600万份" in text
+    assert "09-18 清单公布上限，非实时剩余" in text
+    assert "暂停申购不等于停牌" in text
+    assert "不限" not in text and "¥" not in text
+
+
+@pytest.mark.parametrize("status,day,label", [
+    ("suspended", DAY, "暂停申购"),
+    ("unknown", DAY, "申购额度：未确认"),
+    ("open", date(2026, 9, 17), "申购额度：未确认"),
+    ("open", date(2026, 9, 21), "申购额度：未确认"),
+])
+def test_unavailable_creation_never_reuses_numeric_caps(status, day, label):
+    quota = CreationQuota(effective_date=day, status=status,
+                          account_cumulative=Decimal("123456789"))
+    text = json.dumps(build_cards([Quote(PRODUCT, subscription=quota)],
+                                 candidate_count=1, now=NOW, expected=DAY), ensure_ascii=False)
+    assert label in text and "1.23456789" not in text and "123456789" not in text
+    assert "一级申购：开放" not in text
+
+
+def test_zero_and_missing_caps_do_not_become_unlimited_or_available_zero():
+    quota = CreationQuota(effective_date=DAY, status="open",
+                          account_cumulative=Decimal("0"), fund_net=Decimal("0"))
+    text = json.dumps(build_cards([Quote(PRODUCT, subscription=quota)],
+                                 candidate_count=1, now=NOW, expected=DAY), ensure_ascii=False)
+    assert "单户上限：未确认" in text and "基金整体上限：未确认" in text
+    assert "不限" not in text and "0份" not in text
+
+
+def test_quota_rich_fifty_products_keep_every_row_within_wire_limit():
+    quota = CreationQuota(
+        effective_date=DAY, status="open", creation_unit=Decimal("1000000"),
+        account_cumulative=Decimal("1000000"), account_net=Decimal("2000000"),
+        fund_cumulative=Decimal("50000000"), fund_net=Decimal("30000000"),
+    )
+    quotes = [Quote(replace(PRODUCT, symbol=f"{513000+i}.SH"), DAY, 1.2345,
+                    subscription=quota) for i in range(50)]
+    cards = build_cards(quotes, candidate_count=50, now=NOW, expected=DAY)
+    assert len(cards) > 1
+    assert all(len(json.dumps(c).encode()) <= MAX_CARD_BYTES for c in cards)
+    rows = [e["text"]["content"] for c in cards for e in c["card"]["elements"]
+            if e.get("text", {}).get("content", "").startswith("**")]
+    assert len(rows) == 50
+    assert all("单户上限：累计申购100万份 · 净申购200万份" in row for row in rows)
+    assert all("基金整体上限：累计申购5000万份 · 净申购3000万份" in row for row in rows)
 
 
 @pytest.fixture
@@ -372,6 +436,8 @@ def cli(monkeypatch):
     monkeypatch.setattr(us_etf_main, "FeishuNotifier", notifier)
     monkeypatch.setattr(us_etf_main, "get_settings", settings)
     monkeypatch.setattr(us_etf_main, "shanghai_now", lambda: NOW)
+    monkeypatch.setattr(us_etf_main, "fetch_quotas",
+                        lambda symbols, expected: {s: CreationQuota() for s in symbols})
     return factory, notifier
 
 
@@ -384,6 +450,16 @@ def test_dryrun_and_normal_delivery(cli, capsys):
     assert us_etf_main.main([]) == 0
     assert notifier.return_value.send_card.call_args.kwargs["webhook_key"] == "us_etf"
     factory.return_value.close.assert_called()
+
+
+def test_cli_attaches_verified_exchange_quota_before_rendering(cli, capsys, monkeypatch):
+    quota = CreationQuota(effective_date=DAY, status="open",
+                          account_cumulative=Decimal("500000"))
+    fetch = MagicMock(return_value={PRODUCT.symbol: quota})
+    monkeypatch.setattr(us_etf_main, "fetch_quotas", fetch)
+    assert us_etf_main.main(["--dry-run"]) == 0
+    fetch.assert_called_once_with([PRODUCT.symbol], DAY)
+    assert "单户上限：累计申购50万份" in capsys.readouterr().out
 
 
 def test_failed_delivery_returns_nonzero(cli):
