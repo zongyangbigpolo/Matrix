@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
@@ -215,7 +216,7 @@ def test_source_reuses_tables_and_only_reads_current_bounded_window(live_source,
     assert quotes[0].change == pytest.approx(10)
     assert any("date IN" in sql and "LIMIT 30" in sql for sql in statements)
     client.universes.get.assert_called_once_with("CN_ETF")
-    args, kwargs = client.klines.batch.call_args
+    args, kwargs = client.klines.batch.call_args_list[0]
     assert args == ([PRODUCT.symbol],)
     assert kwargs["count"] == 30 and kwargs["max_workers"] == 1
     assert kwargs["adjust"] == "forward"
@@ -263,7 +264,11 @@ def test_bad_daily_dates_fail_explicitly(live_source, bad_date):
 
 
 def test_bad_latest_values_remain_visible_and_stale_is_labelled(live_source):
-    instance, _, frame = live_source
+    instance, client, frame = live_source
+    raw = frame.copy()
+    client.klines.batch.side_effect = lambda symbols, **kwargs: {
+        PRODUCT.symbol: raw if kwargs["adjust"] == "none" else frame
+    }
     instance.engine._upsert_daily(instance.engine._normalize_kline(PRODUCT.symbol, frame))
     frame["close"] = frame["close"].astype(float)
     frame.loc[1, "close"] = float("inf")
@@ -321,7 +326,8 @@ def test_metadata_filters_before_daily_sync_and_keeps_new_missing_products(live_
     }
     quotes = instance.fetch(DAY)
     assert len(quotes) == 21 and quotes[-1].close is None
-    assert [len(call.args[0]) for call in client.klines.batch.call_args_list] == [20, 1]
+    assert all(len(call.args[0]) <= 20 for call in client.klines.batch.call_args_list)
+    assert {call.kwargs["adjust"] for call in client.klines.batch.call_args_list} == {"forward", "none"}
     assert all("510300.SH" not in call.args[0]
                for call in client.klines.batch.call_args_list)
 
@@ -343,7 +349,8 @@ def test_cards_actual_wire_bytes_links_and_no_lost_rows(count):
     quotes = [
         Quote(replace(PRODUCT, symbol=f"{513000+i}.SH",
                       name="纳指ETF[伪链接](https://bad.invalid)<&>" + "名" * 190),
-              DAY, 11, i, 10, date(2026, 9, 16), False, i == 0)
+              DAY, 11, i, market_close=11, market_date=date(2026, 9, 17) if i == 0 else DAY,
+              market_change=10, market_previous_date=date(2026, 9, 16))
         for i in range(count)
     ]
     cards = build_cards(quotes, candidate_count=count, now=NOW, expected=DAY)
@@ -354,10 +361,11 @@ def test_cards_actual_wire_bytes_links_and_no_lost_rows(count):
     for quote in quotes:
         code = quote.product.symbol[:6]
         assert text.count(f"[{code}](https://fund.10jqka.com.cn/{code}/)") == 1
-    assert "场内交易" in text and "数据滞后" in text and "非单日涨跌幅" in text
+    assert "沪深市场" in text and "数据滞后" in text and "非单日涨跌幅" in text
     assert "&lt;&amp;&gt;" in text and "[伪链接](" not in text
     assert "可买额度" not in text and "推荐买入" not in text
-    assert "前复权收盘" in text
+    assert "参考收盘" in text and "1手100份" in text
+    assert "前复权" not in text
     assert "不构成交易建议" not in text
     for boilerplate in ("最多", "明确候选", "展示", "全清单", "人民币成交额"):
         assert boilerplate not in text
@@ -370,75 +378,43 @@ def test_missing_quote_card_does_not_invent_values():
     assert "¥0" not in text and "收盘日 暂无行情日期" in text
 
 
-def test_subscription_caps_keep_scope_units_and_effective_date():
+@pytest.mark.parametrize("status", ["open", "suspended", "unknown"])
+def test_retail_card_never_displays_large_primary_creation_caps(status):
     quota = CreationQuota(
-        effective_date=DAY, status="open", creation_unit=Decimal("1300000"),
+        effective_date=DAY, status=status, creation_unit=Decimal("1300000"),
         fund_cumulative=Decimal("0"), fund_net=Decimal("36000000"),
         account_cumulative=Decimal("1300000"),
     )
-    text = json.dumps(build_cards([Quote(PRODUCT, subscription=quota)],
+    text = json.dumps(build_cards([Quote(PRODUCT, close=99, subscription=quota,
+                                        market_close=1.678, market_date=DAY)],
                                  candidate_count=1, now=NOW, expected=DAY), ensure_ascii=False)
-    assert "一级申购：开放" in text
-    assert "最小申购单位：130万份" in text
-    assert "当日单户上限：累计申购130万份" in text
-    assert "当日基金整体上限：净申购3600万份" in text
-    assert "09-18：当日公布上限" in text
-    assert "实时剩余可申购份额：未确认" in text
-    assert text.count("实时剩余可申购份额：未确认") == 1
-    assert "暂停申购不等于停牌" in text
-    assert "不限" not in text and "¥" not in text
+    assert "1手100份 · 收盘估算 ¥167.80" in text
+    assert "参考收盘 ¥1.6780" in text
+    assert "东方财富" in text and "无需美国证券账户" in text
+    assert "持仓市值不等于可用资金" in text
+    for word in ("一级申购", "130万", "3600万", "申购上限", "¥99", "不限"):
+        assert word not in text
 
 
-@pytest.mark.parametrize("status,day,label", [
-    ("suspended", DAY, "暂停申购"),
-    ("unknown", DAY, "申购额度：未确认"),
-    ("open", date(2026, 9, 17), "申购额度：未确认"),
-    ("open", date(2026, 9, 21), "申购额度：未确认"),
-])
-def test_unavailable_creation_never_reuses_numeric_caps(status, day, label):
-    quota = CreationQuota(effective_date=day, status=status,
-                          account_cumulative=Decimal("123456789"))
-    text = json.dumps(build_cards([Quote(PRODUCT, subscription=quota)],
-                                 candidate_count=1, now=NOW, expected=DAY), ensure_ascii=False)
-    assert label in text and "1.23456789" not in text and "123456789" not in text
-    assert "一级申购：开放" not in text
-
-
-def test_zero_and_missing_caps_do_not_become_unlimited_or_available_zero():
-    quota = CreationQuota(effective_date=DAY, status="open",
-                          account_cumulative=Decimal("0"), fund_net=Decimal("0"))
-    text = json.dumps(build_cards([Quote(PRODUCT, subscription=quota)],
-                                 candidate_count=1, now=NOW, expected=DAY), ensure_ascii=False)
-    assert "单户上限：未确认" in text and "基金整体上限：未确认" in text
-    assert "不限" not in text and "0份" not in text
-
-
-def test_weekend_quota_never_claims_available_today():
-    quota = CreationQuota(effective_date=DAY, status="open",
-                          account_cumulative=Decimal("1000000"))
+def test_weekend_close_never_claims_realtime_buyability():
     sunday = NOW.replace(day=20)
-    text = json.dumps(build_cards([Quote(PRODUCT, subscription=quota)], candidate_count=1,
+    text = json.dumps(build_cards([Quote(PRODUCT, market_date=DAY, market_close=1.5)], candidate_count=1,
                                  now=sunday, expected=DAY), ensure_ascii=False)
-    assert "09-18 额度，不代表今天可申购份额" in text
-    assert "实时剩余可申购份额：未确认" in text
+    assert "收盘日 2026-09-18（非实时）" in text
+    assert "实时停牌状态、溢价及账户交易权限请在下单前核对" in text
+    assert "今日可买" not in text and "开放" not in text
 
 
-def test_quota_rich_fifty_products_keep_every_row_within_wire_limit():
-    quota = CreationQuota(
-        effective_date=DAY, status="open", creation_unit=Decimal("1000000"),
-        account_cumulative=Decimal("1000000"), account_net=Decimal("2000000"),
-        fund_cumulative=Decimal("50000000"), fund_net=Decimal("30000000"),
-    )
-    quotes = [Quote(replace(PRODUCT, symbol=f"{513000+i}.SH"), DAY, 1.2345,
-                    subscription=quota) for i in range(50)]
+def test_fifty_retail_products_keep_every_row_within_wire_limit():
+    quotes = [Quote(replace(PRODUCT, symbol=f"{513000+i}.SH", name="长" * 190),
+                    market_date=DAY, market_close=1.2345) for i in range(50)]
     cards = build_cards(quotes, candidate_count=50, now=NOW, expected=DAY)
     assert len(cards) > 1
     assert all(len(json.dumps(c).encode()) <= MAX_CARD_BYTES for c in cards)
     rows = [e["text"]["content"] for c in cards for e in c["card"]["elements"]
             if e.get("text", {}).get("content", "").startswith("**")]
     assert len(rows) == 50
-    assert all("单户上限：累计申购100万份 · 净申购200万份" in row for row in rows)
-    assert all("基金整体上限：累计申购5000万份 · 净申购3000万份" in row for row in rows)
+    assert all("1手100份 · 收盘估算 ¥123.45" in row for row in rows)
 
 
 @pytest.fixture
@@ -451,8 +427,8 @@ def cli(monkeypatch):
     monkeypatch.setattr(us_etf_main, "FeishuNotifier", notifier)
     monkeypatch.setattr(us_etf_main, "get_settings", settings)
     monkeypatch.setattr(us_etf_main, "shanghai_now", lambda: NOW)
-    monkeypatch.setattr(us_etf_main, "fetch_quotas",
-                        lambda symbols, expected: {s: CreationQuota() for s in symbols})
+    monkeypatch.setattr(us_etf_main, "fetch_screen", lambda now: SimpleNamespace(issues=()))
+    monkeypatch.setattr(us_etf_main, "build_hk_cards", lambda screen, now: [])
     return factory, notifier
 
 
@@ -467,31 +443,39 @@ def test_dryrun_and_normal_delivery(cli, capsys):
     factory.return_value.close.assert_called()
 
 
-def test_cli_attaches_verified_exchange_quota_before_rendering(cli, capsys, monkeypatch):
-    quota = CreationQuota(effective_date=DAY, status="open",
-                          account_cumulative=Decimal("500000"))
-    fetch = MagicMock(return_value={PRODUCT.symbol: quota})
-    monkeypatch.setattr(us_etf_main, "fetch_quotas", fetch)
+def test_cli_does_not_fetch_primary_creation_quotas(cli, monkeypatch):
+    fetch = MagicMock()
+    monkeypatch.setattr("matrix_etf.us_etf.subscription.fetch_quotas", fetch)
     assert us_etf_main.main(["--dry-run"]) == 0
-    fetch.assert_called_once_with([PRODUCT.symbol], DAY)
-    assert "单户上限：累计申购50万份" in capsys.readouterr().out
+    fetch.assert_not_called()
 
 
-def test_morning_cli_uses_today_quota_and_previous_close(cli, capsys, monkeypatch):
+@pytest.mark.parametrize("issues,expected_status", [((), 0), (("sse-unavailable",), 1)])
+def test_hong_kong_route_is_distinct_and_incomplete_checks_are_reported(
+    cli, monkeypatch, issues, expected_status,
+):
+    _, notifier = cli
+    hk_card = {"msg_type": "interactive", "card": {"elements": []}}
+    monkeypatch.setattr(us_etf_main, "fetch_screen", lambda now: SimpleNamespace(issues=issues))
+    monkeypatch.setattr(us_etf_main, "build_hk_cards", lambda screen, now: [hk_card])
+    assert us_etf_main.main([]) == expected_status
+    assert [call.kwargs["webhook_key"] for call in notifier.return_value.send_card.call_args_list] == [
+        "us_etf", "hk_etf",
+    ]
+    assert notifier.return_value.send_card.call_args.args[0] == hk_card
+
+
+def test_morning_cli_uses_previous_unadjusted_close(cli, capsys, monkeypatch):
     factory, _ = cli
     previous = date(2026, 9, 17)
-    factory.return_value.fetch.return_value = [Quote(PRODUCT, previous, 11)]
+    factory.return_value.fetch.return_value = [
+        Quote(PRODUCT, previous, 11, market_date=previous, market_close=1.5)
+    ]
     monkeypatch.setattr(us_etf_main, "shanghai_now", lambda: NOW.replace(hour=9, minute=35))
-    quota = CreationQuota(effective_date=DAY, status="open",
-                          account_cumulative=Decimal("500000"))
-    fetch = MagicMock(return_value={PRODUCT.symbol: quota})
-    monkeypatch.setattr(us_etf_main, "fetch_quotas", fetch)
     assert us_etf_main.main(["--dry-run"]) == 0
     factory.return_value.fetch.assert_called_once_with(previous)
-    fetch.assert_called_once_with([PRODUCT.symbol], DAY)
     text = capsys.readouterr().out
-    assert "收盘日 2026-09-17" in text and "申购额度对应 09-18" in text
-    assert "单户上限：累计申购50万份" in text
+    assert "收盘日 2026-09-17" in text and "收盘估算 ¥150.00" in text
     assert "不代表今天" not in text and "数据滞后" not in text
 
 

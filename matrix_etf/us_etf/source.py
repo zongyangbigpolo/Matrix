@@ -1,6 +1,7 @@
 """Fresh metadata discovery, selected-only daily sync, and indexed SQLite reads."""
 
 import sqlite3
+from dataclasses import replace
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
@@ -69,6 +70,51 @@ class USEtfSource:
             )
         return selected
 
+    def _market_quotes(self, products, expected: date, end_time: int):
+        symbols = [p.symbol for p in products]
+        data = self.client.klines.batch(
+            symbols, period="1d", count=DAILY_COUNT, adjust="none",
+            as_dataframe=True, max_workers=1, batch_size=DAILY_BATCH, end_time=end_time,
+        )
+        if not isinstance(data, dict) or set(data) != set(symbols):
+            raise SourceError("ETF 不复权日线请求失败或响应标的不匹配；未使用旧缓存")
+        quotes = {}
+        for product in products:
+            frame = data[product.symbol]
+            if (not isinstance(frame, pd.DataFrame) or len(frame) > DAILY_COUNT
+                    or not frame.columns.is_unique):
+                raise SourceError("ETF 不复权日线响应格式异常")
+            rows = []
+            if not frame.empty:
+                if not {"trade_date", "close"}.issubset(frame.columns):
+                    raise SourceError("ETF 不复权日线响应缺少字段")
+                if "symbol" in frame.columns and not frame["symbol"].eq(
+                    product.symbol
+                ).fillna(False).all():
+                    raise SourceError("ETF 不复权日线响应代码不匹配")
+                days = set()
+                for raw_day, raw_close in frame[["trade_date", "close"]].itertuples(
+                    index=False, name=None,
+                ):
+                    try:
+                        day = date.fromisoformat(str(raw_day))
+                    except ValueError:
+                        raise SourceError("ETF 不复权日线交易日期无效") from None
+                    if str(raw_day) != day.isoformat():
+                        raise SourceError("ETF 不复权日线交易日期无效")
+                    if day > expected:
+                        raise SourceError("ETF 不复权日线包含尚未收盘或未来日期")
+                    if day in days:
+                        raise SourceError("ETF 不复权日线出现重复日期")
+                    close = finite_number(raw_close, positive=True)
+                    if close is None:
+                        raise SourceError("ETF 不复权日线收盘价无效")
+                    days.add(day)
+                    rows.append((day.isoformat(), close, None))
+            # Unadjusted prices are presentation-only, never persisted to the strategy cache.
+            quotes[product.symbol] = make_quote(product, rows, expected, self.settings)
+        return quotes
+
     def fetch(self, expected: date):
         products = self.discover()
         quotes = []
@@ -85,12 +131,23 @@ class USEtfSource:
             # TickFlow may suppress failed batches. Missing keys are failures, not empty quotes.
             if not isinstance(data, dict) or any(p.symbol not in data for p in chunk):
                 raise SourceError("ETF 日线请求失败或响应缺少标的；未使用旧缓存")
+            market_quotes = self._market_quotes(chunk, expected, end_time)
             for product in chunk:
+                market = market_quotes[product.symbol]
+                market_fields = {
+                    "market_close": market.close,
+                    "market_date": market.trade_date,
+                    "market_change": market.change,
+                    "market_previous_date": market.previous_date,
+                    "market_previous_is_market_day": market.previous_is_market_day,
+                }
                 frame = data[product.symbol]
                 if not isinstance(frame, pd.DataFrame) or len(frame) > DAILY_COUNT:
                     raise SourceError("ETF 日线响应格式异常")
                 if frame.empty:
-                    quotes.append(make_quote(product, [], expected, self.settings))
+                    quotes.append(replace(
+                        make_quote(product, [], expected, self.settings), **market_fields,
+                    ))
                     continue
                 required = {"trade_date", "open", "high", "low", "close", "volume", "amount"}
                 if not required.issubset(frame.columns):
@@ -130,7 +187,9 @@ class USEtfSource:
                         [product.symbol, *days, DAILY_COUNT],
                     ).fetchall()
                 rows = [row for row in rows if row[0] not in invalid] + list(invalid.values())
-                quotes.append(make_quote(product, rows, expected, self.settings))
+                quotes.append(replace(
+                    make_quote(product, rows, expected, self.settings), **market_fields,
+                ))
         return quotes
 
     def close(self):

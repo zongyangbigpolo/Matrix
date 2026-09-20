@@ -1,5 +1,5 @@
 [Unit]
-Description=Run mainland US-equity ETF daily subscription list after market open
+Description=Run mainland US-equity ETF retail trading reference after market open
 
 [Timer]
 OnCalendar=Mon..Fri 09:35:00 Asia/Shanghai

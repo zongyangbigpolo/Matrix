@@ -47,6 +47,11 @@ class Quote:
     previous_is_market_day: bool = False
     stale: bool = False
     subscription: CreationQuota | None = None
+    market_close: float | None = None
+    market_date: date | None = None
+    market_change: float | None = None
+    market_previous_date: date | None = None
+    market_previous_is_market_day: bool = False
 
 
 def classify(info: dict) -> Product | None:
